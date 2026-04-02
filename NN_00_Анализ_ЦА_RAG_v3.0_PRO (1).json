@@ -1,0 +1,1001 @@
+{
+  "name": "NN_00_Анализ_ЦА_RAG_v3.0_PRO",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "analiz-ca",
+        "responseMode": "responseNode",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "X-Workflow-Version",
+                "value": "v3.0"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -3360,
+        512
+      ],
+      "id": "c3802369-856e-4643-baab-4d9e1dd33718",
+      "name": "Webhook",
+      "webhookId": "webhook-analiz-ca-001"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -3360,
+        112
+      ],
+      "id": "e08242ed-29ff-4907-acb4-4da06756c6c9",
+      "name": "Cron Weekly Update"
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.NOCODB_BASE_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG_ID }}/projects",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -3120,
+        112
+      ],
+      "id": "eea099bd-32a7-4c1a-b60f-bb1f1d3fba78",
+      "name": "Fetch Active Projects",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "fieldToSplitOut": "list",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitOut",
+      "typeVersion": 1,
+      "position": [
+        -2880,
+        112
+      ],
+      "id": "cc30b83d-1902-4261-83b7-d0e2772c7e08",
+      "name": "Split Projects"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst body = $input.first().json.body || $input.first().json || {};\nconst niche = (body.niche || '').trim();\nconst city = (body.city || '').trim();\nconst type = (body.target_audience_type || 'B2C').trim().toUpperCase();\nconst project_id = (body.project_id || '').trim();\nconst domain = (body.domain || '').trim();\nconst is_cron = $execution.mode === 'trigger';\n\n// Strict validation\nconst errors = [];\nif (!niche) errors.push('niche is required');\nif (!city) errors.push('city is required');\nif (!['B2C', 'B2B', 'B2B2C'].includes(type)) errors.push('target_audience_type must be B2C/B2B/B2B2C');\nif (!project_id) errors.push('project_id is required');\n\nif (errors.length > 0) {\n  throw new Error('Validation failed: ' + errors.join('; '));\n}\n\n// Deterministic ID for deduplication\nconst crypto = require('crypto');\nconst dedup_key = `${project_id}_${niche}_${city}_${type}`.toLowerCase();\nconst deterministic_id = crypto.createHash('md5').update(dedup_key).digest('hex');\n\nreturn [{ json: {\n  niche, city, target_audience_type: type, project_id, domain,\n  embed_query: `${niche} ${city} ${type} целевая аудитория SEO анализ`,\n  is_cron_trigger: is_cron,\n  dedup_key,\n  deterministic_id,\n  workflow_version: 'v3.0_pro',\n  started_at: Date.now()\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3120,
+        512
+      ],
+      "id": "e455fe18-e137-41e4-8008-89920b8d542b",
+      "name": "Validate & Normalize Input"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OLLAMA_URL || 'http://ollama:11434' }}/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.EMBED_MODEL || 'bge-m3' }}\",\n  \"prompt\": \"{{ $json.embed_query }}\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2880,
+        512
+      ],
+      "id": "629187ff-089e-4884-b0c8-3b179c56e621",
+      "name": "Get Query Embedding",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.QDRANT_URL || 'http://qdrant:6333' }}/collections/seo_personas/points/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($(\"Get Query Embedding\").first().json.embedding) }},\n  \"limit\": 5,\n  \"with_payload\": true,\n  \"score_threshold\": 0.4,\n  \"filter\": {\n    \"must\": [{ \"key\": \"qc_score\", \"range\": { \"gte\": 70 } }]\n  }\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2640,
+        208
+      ],
+      "id": "f2c3b4fb-0375-4e8c-951e-dc906e0f0ce5",
+      "name": "Search seo_personas",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.QDRANT_URL || 'http://qdrant:6333' }}/collections/competitor_audiences/points/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($(\"Get Query Embedding\").first().json.embedding) }},\n  \"limit\": 3,\n  \"with_payload\": true,\n  \"score_threshold\": 0.5\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2640,
+        512
+      ],
+      "id": "de1631c4-bcfe-46f6-b947-cad115a9df19",
+      "name": "Search competitor_audiences",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.QDRANT_URL || 'http://qdrant:6333' }}/collections/search_intents/points/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($(\"Get Query Embedding\").first().json.embedding) }},\n  \"limit\": 5,\n  \"with_payload\": true,\n  \"score_threshold\": 0.45\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2640,
+        800
+      ],
+      "id": "18ccb5ce-8e13-40f8-b042-6c6a790175f5",
+      "name": "Search search_intents",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        -2400,
+        512
+      ],
+      "id": "ca79a68e-c366-4ac0-b6f9-867d397e10c8",
+      "name": "Wait All RAG Results"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nlet pResults = [], cResults = [], iResults = [];\ntry { pResults = $('Search seo_personas').first().json.result || []; } catch(e) {}\ntry { cResults = $('Search competitor_audiences').first().json.result || []; } catch(e) {}\ntry { iResults = $('Search search_intents').first().json.result || []; } catch(e) {}\n\nlet context = '', sourcesCount = 0;\n\nif (pResults.length > 0) {\n  context += '=== ПОХОЖИЕ ПЕРСОНЫ ИЗ БАЗЫ (RAG) ===\\n\\n';\n  pResults.forEach((r, i) => {\n    const p = r.payload || {};\n    context += `Проект ${i+1} (релевантность: ${Math.round(r.score*100)}%):\\n`;\n    context += `  Ниша: ${p.niche||''}, город: ${p.city||''}\\n`;\n    context += `  Персона: ${p.persona_name||''}\\n`;\n    context += `  JTBD: ${p.main_jtbd||'н/д'}\\n`;\n    context += `  QC: ${p.qc_score||'н/д'}/100\\n---\\n`;\n  });\n  sourcesCount += pResults.length;\n}\n\nif (cResults.length > 0) {\n  context += '\\n=== ДАННЫЕ О ЦА КОНКУРЕНТОВ ===\\n\\n';\n  cResults.forEach((r, i) => {\n    const c = r.payload || {};\n    context += `Конкурент ${i+1}: ${c.competitor_domain||''}\\n`;\n    context += `  Сегмент: ${c.segment||'н/д'}\\n`;\n    context += `  Ключевые отличия: ${c.differentiators||'н/д'}\\n---\\n`;\n  });\n  sourcesCount += cResults.length;\n}\n\nif (iResults.length > 0) {\n  context += '\\n=== МАППИНГ SEARCH INTENT ===\\n\\n';\n  iResults.forEach((r) => {\n    const s = r.payload || {};\n    context += `${s.query||''} → ${s.intent_type||''} (Хант: ${s.hunt_level||''}, Volume: ${s.volume||'н/д'})\\n`;\n  });\n  sourcesCount += iResults.length;\n}\n\nreturn [{ json: {\n  rag_context: context || 'Нет данных в RAG базе — генерация с нуля.',\n  sources_count: sourcesCount,\n  top_score: pResults[0]?.score || 0,\n  has_competitor_data: cResults.length > 0,\n  has_intent_data: iResults.length > 0,\n  rag_quality: sourcesCount >= 5 ? 'rich' : (sourcesCount > 0 ? 'partial' : 'empty')\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2160,
+        512
+      ],
+      "id": "528a89f5-ab1b-40b8-ba49-5254a2c475c1",
+      "name": "Format RAG Context"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst rag = $('Format RAG Context').first().json;\nconst inp = $('Validate & Normalize Input').first().json;\n\n// Real A/B test: different prompt strategies\nconst abRandom = Math.random();\nlet abVersion, promptStrategy;\n\nif (abRandom < 0.33) {\n  abVersion = 'v3.0_A_structured';\n  promptStrategy = 'СТРУКТУРИРОВАННЫЙ ПОДХОД: Начни с анализа рынка, затем построй персону. Используй фреймворк JTBD + Лестница Ханта последовательно.';\n} else if (abRandom < 0.66) {\n  abVersion = 'v3.0_B_empathy';\n  promptStrategy = 'ЭМПАТИЧЕСКИЙ ПОДХОД: Начни с болей и эмоций аудитории. Погрузись в мир персоны, затем формализуй через JTBD и поисковое поведение.';\n} else {\n  abVersion = 'v3.0_C_data_driven';\n  promptStrategy = 'DATA-DRIVEN ПОДХОД: Начни с поисковых запросов и данных конкурентов. Построй персону на основе реального поискового поведения и intent mapping.';\n}\n\nconst ragBlock = rag.rag_context\n  ? `\\n\\nКОНТЕКСТ ИЗ RAG БАЗЫ (качество: ${rag.rag_quality}, ${rag.sources_count} источников):\\n${rag.rag_context}\\n\\nИспользуй данные RAG для обогащения, но НЕ копируй буквально. Адаптируй под текущую нишу и город.`\n  : '';\n\nconst systemPrompt = `Ты — Senior маркетолог-аналитик с 15-летним опытом в digital-маркетинге и SEO.\n\nТВОЯ СПЕЦИАЛИЗАЦИЯ:\n- Jobs-To-Be-Done (JTBD) framework — функциональные, эмоциональные, социальные работы\n- Лестница осведомлённости Бена Ханта (5 уровней)\n- AEO (Answer Engine Optimization) — оптимизация под AI-поиск\n- GEO (Generative Engine Optimization) — оптимизация под генеративные системы\n- YMYL-тематики и E-E-A-T факторы\n\nСТРАТЕГИЯ ГЕНЕРАЦИИ: ${promptStrategy}\n${ragBlock}\n\nКРИТИЧЕСКИЕ ПРАВИЛА:\n1) Создай ОДНУ детальную персону\n2) Все данные должны быть РЕАЛИСТИЧНЫМИ для указанного региона\n3) Поисковые запросы строго на РУССКОМ языке\n4) JTBD формулируй от первого лица: \"Когда я [ситуация], я хочу [действие], чтобы [результат]\"\n5) AEO-профиль ОБЯЗАТЕЛЕН: включи AI-поиск (Яндекс Нейро, ChatGPT, Perplexity)\n6) Минимум 5000 символов в ответе\n7) Каждый уровень Ханта = минимум 3 поисковых запроса\n\nФОРМАТ: Ответь строго валидным JSON без markdown-обёртки, без комментариев, без trailing commas.\nPrompt version: ${abVersion}`;\n\nconst userPrompt = `Создай детальный портрет целевой аудитории:\n\nВХОДНЫЕ ДАННЫЕ:\n- НИША: ${inp.niche}\n- РЕГИОН: ${inp.city}\n- СЕГМЕНТ: ${inp.target_audience_type}\n${inp.domain ? '- ДОМЕН: ' + inp.domain : ''}\n\nЗаполни ВСЕ поля JSON-схемы ниже. Каждое поле обязательно.\n\n{\n  \"persona_name\": \"Имя Фамилия, роль/должность\",\n  \"segment\": \"${inp.target_audience_type}\",\n  \"demographics\": {\n    \"age_range\": \"25-35\",\n    \"gender\": \"female|male|any\",\n    \"income_level\": \"ниже среднего|средний|выше среднего|высокий\",\n    \"location\": \"${inp.city}\",\n    \"occupation\": \"конкретная профессия\",\n    \"family_status\": \"статус\",\n    \"education\": \"уровень образования\",\n    \"digital_literacy\": \"низкая|средняя|высокая\"\n  },\n  \"jtbd\": {\n    \"core_job\": \"Когда я [ситуация], я хочу [мотивация], чтобы [результат]\",\n    \"functional_jobs\": [\"задача 1\", \"задача 2\", \"задача 3\"],\n    \"emotional_job\": \"эмоциональная потребность\",\n    \"social_job\": \"социальный аспект\",\n    \"triggers\": [\"событие 1\", \"событие 2\", \"событие 3\", \"событие 4\"],\n    \"barriers\": [\"возражение 1\", \"возражение 2\", \"возражение 3\"],\n    \"hiring_criteria\": [\"критерий выбора 1\", \"критерий 2\", \"критерий 3\"],\n    \"firing_triggers\": [\"причина отказа 1\", \"причина 2\"]\n  },\n  \"hunt_ladder\": {\n    \"level_1_unaware\": {\n      \"description\": \"описание состояния\",\n      \"content_strategy\": \"стратегия контента\",\n      \"sample_queries\": [\"запрос1\", \"запрос2\", \"запрос3\"],\n      \"content_formats\": [\"блог\", \"видео\"],\n      \"kpi_metrics\": [\"метрика1\"]\n    },\n    \"level_2_problem_aware\": {\n      \"description\": \"...\",\n      \"content_strategy\": \"...\",\n      \"sample_queries\": [\"запрос1\", \"запрос2\", \"запрос3\"],\n      \"content_formats\": [\"гайд\", \"чеклист\"],\n      \"kpi_metrics\": [\"метрика1\"]\n    },\n    \"level_3_solution_aware\": {\n      \"description\": \"...\",\n      \"content_strategy\": \"...\",\n      \"sample_queries\": [\"запрос1\", \"запрос2\", \"запрос3\"],\n      \"content_formats\": [\"лендинг\", \"кейс\"],\n      \"kpi_metrics\": [\"метрика1\"]\n    },\n    \"level_4_product_aware\": {\n      \"description\": \"...\",\n      \"content_strategy\": \"...\",\n      \"sample_queries\": [\"запрос1\", \"запрос2\", \"запрос3\"],\n      \"content_formats\": [\"страница услуги\", \"сравнение\"],\n      \"kpi_metrics\": [\"метрика1\"]\n    },\n    \"level_5_most_aware\": {\n      \"description\": \"...\",\n      \"content_strategy\": \"...\",\n      \"sample_queries\": [\"запрос1\", \"запрос2\", \"запрос3\"],\n      \"content_formats\": [\"CTA-страница\", \"акция\"],\n      \"kpi_metrics\": [\"метрика1\"]\n    }\n  },\n  \"search_behavior\": {\n    \"primary_engine\": \"Яндекс|Google|оба\",\n    \"device_split\": {\"mobile\": 70, \"desktop\": 30},\n    \"peak_search_hours\": \"19:00-23:00\",\n    \"query_style\": \"короткие|средние|длинные|микс\",\n    \"decision_timeline\": \"1 день|1 неделя|1 месяц|3+ месяца\",\n    \"decision_factors\": [\"фактор1\", \"фактор2\", \"фактор3\"],\n    \"comparison_behavior\": \"как сравнивает варианты\",\n    \"micro_moments\": [\"момент1\", \"момент2\"]\n  },\n  \"aeo_profile\": {\n    \"uses_ai_search\": true,\n    \"ai_adoption_level\": \"ранний|растущий|активный\",\n    \"ai_platforms\": [\"Яндекс Нейро\", \"ChatGPT\", \"Perplexity\"],\n    \"ai_query_examples\": [\"AI-вопрос 1\", \"AI-вопрос 2\", \"AI-вопрос 3\"],\n    \"ai_trust_level\": \"низкий|средний|высокий\",\n    \"voice_search_queries\": [\"голосовой 1\", \"голосовой 2\"],\n    \"featured_snippet_queries\": [\"запрос для сниппета 1\", \"запрос 2\"],\n    \"geo_queries\": [\"${inp.city} + запрос 1\", \"${inp.city} + запрос 2\"]\n  },\n  \"content_preferences\": {\n    \"preferred_formats\": [\"видео\", \"текст\", \"инфографика\"],\n    \"content_length_preference\": \"короткий|средний|лонгрид\",\n    \"social_platforms\": [\"ВКонтакте\", \"Telegram\", \"YouTube\"],\n    \"trust_signals\": [\"отзывы\", \"сертификаты\", \"кейсы\"],\n    \"ugc_influence\": \"низкое|среднее|высокое\"\n  },\n  \"competitor_overlap\": {\n    \"likely_considers\": [\"конкурент1.ru\", \"конкурент2.ru\"],\n    \"switch_triggers\": [\"причина переключения 1\", \"причина 2\"],\n    \"loyalty_factors\": [\"фактор 1\", \"фактор 2\"]\n  },\n  \"commercial_factors\": {\n    \"price_sensitivity\": \"низкая|средняя|высокая\",\n    \"avg_check_range\": \"от X до Y руб.\",\n    \"payment_preferences\": [\"онлайн\", \"наличные\", \"рассрочка\"],\n    \"seasonal_patterns\": [\"пик 1\", \"спад 1\"]\n  },\n  \"priority_score\": 85,\n  \"priority_reasoning\": \"обоснование приоритетности сегмента\"\n}`;\n\nreturn [{ json: {\n  system_prompt: systemPrompt,\n  user_prompt: userPrompt,\n  prompt_version: abVersion,\n  model: 'llama-3.3-70b-versatile',\n  fallback_model: 'llama-3.1-8b-instant'\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1920,
+        512
+      ],
+      "id": "8abf13de-10e6-4ed3-8fa5-bbeba4bf4f47",
+      "name": "Build Prompt v3.0"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst p = $('Build Prompt v3.0').first().json;\nconst inp = $('Validate & Normalize Input').first().json;\n\nconst logEntry = {\n  workflow_name: 'NN_00_v3.0_PRO',\n  workflow_id: 'step_00',\n  project_id: inp.project_id,\n  prompt_version: p.prompt_version,\n  prompt_type: 'persona_generation',\n  model: p.model,\n  system_prompt: p.system_prompt.substring(0, 3000),\n  user_prompt: p.user_prompt.substring(0, 3000),\n  input_data: JSON.stringify({niche: inp.niche, city: inp.city, type: inp.target_audience_type, domain: inp.domain}),\n  status: 'pending',\n  started_at: new Date().toISOString()\n};\n\nreturn [{ json: { llm_log_payload: logEntry, prompt_version: p.prompt_version }}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1680,
+        512
+      ],
+      "id": "16f1299a-55d4-494f-9b88-f023c46c3990",
+      "name": "Prepare LLM Log (Pre)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOCODB_BASE_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG_ID }}/llm_logs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.llm_log_payload) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1440,
+        512
+      ],
+      "id": "63149c6d-3c0b-477b-b67f-2cf004d2eb05",
+      "name": "Save LLM Log (Pre)",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst prompt = $('Build Prompt v3.0').first().json;\nconst preLog = $('Save LLM Log (Pre)').first().json;\nconst logId = preLog.Id || preLog.id || null;\n\nconst payload = {\n  model: prompt.model,\n  max_tokens: 5000,\n  temperature: 0.4,\n  top_p: 0.9,\n  response_format: { type: \"json_object\" },\n  messages: [\n    { role: 'system', content: prompt.system_prompt },\n    { role: 'user', content: prompt.user_prompt }\n  ]\n};\n\nreturn [{ json: {\n  groq_payload: payload,\n  fallback_model: prompt.fallback_model,\n  log_id: logId,\n  attempt: 1,\n  started_at: Date.now()\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        512
+      ],
+      "id": "ebd23bc7-8d13-4df3-8950-4718ee1c58ec",
+      "name": "Prepare LLM Call"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.groq_payload) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -960,
+        512
+      ],
+      "id": "27bfc8c6-6a99-455b-9f8f-2ecb0c43e66f",
+      "name": "Groq LLM Call",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst response = $input.first().json;\nconst inp = $('Validate & Normalize Input').first().json;\nconst ragInfo = $('Format RAG Context').first().json;\nconst promptInfo = $('Build Prompt v3.0').first().json;\nconst llmPrep = $('Prepare LLM Call').first().json;\nconst latency_ms = Date.now() - llmPrep.started_at;\n\nlet rawText = '', tokens = 0, model_used = '';\nif (response.choices) {\n  rawText = response.choices[0].message.content;\n  tokens = response.usage?.total_tokens || 0;\n  model_used = response.model || '';\n} else if (response.content) {\n  rawText = response.content[0].text;\n} else {\n  throw new Error('Unknown LLM response format: ' + JSON.stringify(response).substring(0, 200));\n}\n\n// Robust JSON extraction\nlet clean = rawText;\n\n// Remove markdown wrappers\nclean = clean.replace(/^```(?:json)?\\s*\\n?/gm, '').replace(/\\n?```\\s*$/gm, '').trim();\n\n// Remove BOM\nclean = clean.replace(/^\\uFEFF/, '');\n\n// Try to extract JSON object if wrapped in text\nconst jsonMatch = clean.match(/\\{[\\s\\S]*\\}/);\nif (jsonMatch) clean = jsonMatch[0];\n\n// Fix trailing commas before } or ]\nclean = clean.replace(/,\\s*([}\\]])/g, '$1');\n\n// Fix unescaped newlines in strings\nclean = clean.replace(/(?<=\":[ ]*\"[^\"]*)\\n(?=[^\"]*\")/g, '\\\\n');\n\nconst rawLength = clean.length;\n\nlet persona;\ntry {\n  persona = JSON.parse(clean);\n} catch(e) {\n  // Second attempt: more aggressive cleanup\n  try {\n    const cleaned2 = clean\n      .replace(/[\\x00-\\x1F\\x7F]/g, ' ')  // control chars\n      .replace(/,\\s*}/g, '}')\n      .replace(/,\\s*\\]/g, ']');\n    persona = JSON.parse(cleaned2);\n  } catch(e2) {\n    throw new Error('JSON parse failed after 2 attempts. First 500 chars: ' + clean.substring(0, 500));\n  }\n}\n\n// === VALIDATION ===\nconst required = [\n  'persona_name', 'segment', 'demographics', 'jtbd', 'hunt_ladder',\n  'search_behavior', 'aeo_profile', 'content_preferences', 'competitor_overlap', 'priority_score'\n];\nconst missing = required.filter(f => !persona[f]);\n\nconst huntLevels = persona.hunt_ladder ? Object.keys(persona.hunt_ladder).length : 0;\nconst hasAEO = persona.aeo_profile?.ai_platforms?.length > 0;\nconst scoreValid = persona.priority_score >= 1 && persona.priority_score <= 100;\nconst hasBarriers = persona.jtbd?.barriers?.length > 0;\nconst hasTriggers = persona.jtbd?.triggers?.length > 0;\nconst hasCommercial = !!persona.commercial_factors;\n\n// Weighted QC scoring\nlet qc_score = 100;\nconst issues = [];\n\nif (missing.length > 0) { qc_score -= (missing.length * 8); issues.push('Missing fields: ' + missing.join(', ')); }\nif (!hasTriggers) { qc_score -= 12; issues.push('No JTBD triggers'); }\nif (!hasBarriers) { qc_score -= 12; issues.push('No JTBD barriers'); }\nif (huntLevels < 5) { qc_score -= 20; issues.push(`Only ${huntLevels}/5 Hunt levels`); }\nif (!hasAEO) { qc_score -= 15; issues.push('No AEO data'); }\nif (!persona.demographics?.age_range) { qc_score -= 8; issues.push('No age_range'); }\nif (!scoreValid) { qc_score -= 8; issues.push('Invalid priority_score'); }\nif (rawLength < 3000) { qc_score -= 20; issues.push(`Too short: ${rawLength} chars`); }\nelse if (rawLength < 4000) { qc_score -= 10; issues.push(`Short: ${rawLength} chars`); }\nif (!hasCommercial) { qc_score -= 5; issues.push('No commercial_factors'); }\n\n// Check query count per Hunt level\nlet totalQueries = 0;\nif (persona.hunt_ladder) {\n  Object.entries(persona.hunt_ladder).forEach(([level, data]) => {\n    const queries = data?.sample_queries?.length || 0;\n    totalQueries += queries;\n    if (queries < 3) { qc_score -= 3; issues.push(`${level}: only ${queries} queries`); }\n  });\n}\n\nqc_score = Math.max(0, Math.min(100, qc_score));\nconst status = qc_score >= 80 ? 'ready' : (qc_score >= 60 ? 'review' : 'poor');\n\nconst allQueries = [];\nif (persona.hunt_ladder) {\n  Object.values(persona.hunt_ladder).forEach(level => {\n    if (level.sample_queries) allQueries.push(...level.sample_queries);\n  });\n}\n\nreturn [{ json: {\n  persona,\n  persona_name: persona.persona_name || '',\n  segment: persona.segment || '',\n  niche: inp.niche, city: inp.city,\n  target_audience_type: inp.target_audience_type,\n  project_id: inp.project_id, domain: inp.domain,\n  deterministic_id: inp.deterministic_id,\n  priority_score: persona.priority_score || 50,\n  qc_score, status, issues: issues.length > 0 ? issues : null,\n  main_jtbd: persona.jtbd?.core_job || '',\n  problems_summary: persona.jtbd?.emotional_job || '',\n  top_queries: allQueries.slice(0, 15),\n  total_queries: totalQueries,\n  hunt_ladder_levels: huntLevels,\n  triggers_count: (persona.jtbd?.triggers || []).length,\n  barriers_count: (persona.jtbd?.barriers || []).length,\n  preferred_formats: persona.content_preferences?.preferred_formats || [],\n  ai_platforms: persona.aeo_profile?.ai_platforms || [],\n  has_aeo: !!hasAEO,\n  has_commercial: hasCommercial,\n  rag_sources_used: ragInfo.sources_count || 0,\n  rag_top_score: ragInfo.top_score || 0,\n  rag_quality: ragInfo.rag_quality || 'empty',\n  uses_ai_search: persona.aeo_profile?.uses_ai_search || false,\n  groq_tokens: tokens, model_used, latency_ms,\n  embed_text: `${inp.niche} ${inp.city} ${persona.persona_name||''} ${persona.jtbd?.core_job||''} ${persona.jtbd?.emotional_job||''}`,\n  prompt_version: promptInfo.prompt_version,\n  raw_content_length: rawLength,\n  log_id: llmPrep.log_id\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        512
+      ],
+      "id": "591df7c5-a9a2-456e-8602-3ac3f60f5739",
+      "name": "Extract & Validate JSON"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "qc-check",
+              "leftValue": "={{ $json.qc_score }}",
+              "rightValue": "60",
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -480,
+        512
+      ],
+      "id": "58735be4-4914-4869-88c6-140cc0b73f08",
+      "name": "QC Score Router"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst p = $('Extract & Validate JSON').first().json;\nconst alertMessage = `🔴 SEO ALERT: Низкое качество персоны\n\nWorkflow: NN_00_v3.0_PRO\nProject: ${p.project_id}\nPersona: ${p.persona_name}\nQC Score: ${p.qc_score}/100\nStatus: ${p.status}\nIssues: ${(p.issues || []).join('\\n  • ')}\nModel: ${p.model_used}\nTokens: ${p.groq_tokens}\nLatency: ${p.latency_ms}ms\nRAG sources: ${p.rag_sources_used}\n\nТребуется ручная проверка или перегенерация!`;\n\nreturn [{ json: {\n  email_subject: `[SEO Alert] QC ${p.qc_score}/100 — ${p.project_id}`,\n  email_body: alertMessage,\n  ...p\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        304
+      ],
+      "id": "ef0b3736-3746-4ea8-8ab3-36e487182886",
+      "name": "Prepare Alert"
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $env.ALERT_FROM_EMAIL || 'noreply@seaseo.ru' }}",
+        "toEmail": "={{ $env.ALERT_TO_EMAIL || 'alerts@seaseo.ru' }}",
+        "subject": "={{ $json.email_subject }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        304
+      ],
+      "id": "058da889-3577-4574-aa32-551558fe7569",
+      "name": "Send Email Alert",
+      "webhookId": "41513667-7679-4eef-8f67-20b68267f85b",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.OLLAMA_URL || 'http://ollama:11434' }}/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"{{ $env.EMBED_MODEL || 'bge-m3' }}\",\n  \"prompt\": \"{{ $json.embed_text }}\"\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        0,
+        0
+      ],
+      "id": "08940e30-bde1-47ad-94f1-3ef881bf4747",
+      "name": "Get Persona Embedding",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst p = $('Extract & Validate JSON').first().json;\nconst embedding = $input.first().json.embedding;\nif (!embedding || embedding.length === 0) throw new Error('Empty embedding vector');\n\n// Deterministic ID for upsert (no duplicates!)\nconst payload = {\n  points: [{\n    id: p.deterministic_id,\n    vector: embedding,\n    payload: {\n      persona_name: p.persona_name, segment: p.segment, niche: p.niche, city: p.city,\n      target_audience_type: p.target_audience_type, project_id: p.project_id,\n      priority_score: p.priority_score, qc_score: p.qc_score, main_jtbd: p.main_jtbd,\n      problems_summary: p.problems_summary, top_queries: p.top_queries,\n      hunt_ladder_levels: p.hunt_ladder_levels, uses_ai_search: p.uses_ai_search,\n      status: p.status, prompt_version: p.prompt_version,\n      model_used: p.model_used, latency_ms: p.latency_ms,\n      raw_content_length: p.raw_content_length,\n      updated_at: new Date().toISOString()\n    }\n  }]\n};\nreturn [{ json: { qdrant_payload: payload }}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ],
+      "id": "7aa47813-2b9a-4d31-a427-635dc93e34a3",
+      "name": "Prepare Qdrant Upsert"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "={{ $env.QDRANT_URL || 'http://qdrant:6333' }}/collections/seo_personas/points",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.qdrant_payload) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        480,
+        0
+      ],
+      "id": "fe28d69e-edc6-45ec-a47b-d4e6eabba69f",
+      "name": "Upsert to Qdrant",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst p = $('Extract & Validate JSON').first().json;\n\nconst row = {\n  project_id: p.project_id, persona_name: p.persona_name,\n  segment: p.segment, niche: p.niche, city: p.city,\n  priority_score: p.priority_score, qc_score: p.qc_score,\n  status: p.status, main_jtbd: (p.main_jtbd || '').substring(0, 500),\n  total_queries: p.total_queries,\n  hunt_ladder_levels: p.hunt_ladder_levels,\n  rag_sources_used: p.rag_sources_used, rag_quality: p.rag_quality,\n  groq_tokens: p.groq_tokens, model_used: p.model_used,\n  latency_ms: p.latency_ms,\n  uses_ai_search: p.uses_ai_search, has_commercial: p.has_commercial,\n  prompt_version: p.prompt_version,\n  raw_content_length: p.raw_content_length,\n  issues: p.issues ? JSON.stringify(p.issues) : null,\n  persona_json: JSON.stringify(p.persona).substring(0, 10000),\n  version: 'v3.0_pro',\n  created_at: new Date().toISOString()\n};\nreturn [{ json: { row }}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        512
+      ],
+      "id": "26ab4b3f-d68b-48df-a8d3-a1ce17418d7e",
+      "name": "Prepare NocoDB Row"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOCODB_BASE_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG_ID }}/{{ $env.NOCODB_PERSONAS_TABLE }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.row) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        240,
+        512
+      ],
+      "id": "a2cbb804-ac28-4590-a2d3-a5f08354d4fa",
+      "name": "Save to NocoDB",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst p = $('Extract & Validate JSON').first().json;\nreturn [{ json: {\n  workflow: 'NN_00_v3.0_PRO',\n  project_id: p.project_id,\n  qc_score: p.qc_score,\n  groq_tokens: p.groq_tokens,\n  latency_ms: p.latency_ms,\n  rag_sources: p.rag_sources_used,\n  rag_quality: p.rag_quality,\n  status: p.status,\n  model: p.model_used,\n  prompt_version: p.prompt_version,\n  hunt_levels: p.hunt_ladder_levels,\n  total_queries: p.total_queries,\n  timestamp: new Date().toISOString()\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        800
+      ],
+      "id": "abfa252c-7a96-458a-8533-a22d5bf59e43",
+      "name": "Prepare Metrics"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.GRAFANA_PUSH_URL || 'http://grafana:3000/api/push/seo_workflow_metrics' }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 5000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        240,
+        800
+      ],
+      "id": "13800c7a-84f6-46f4-89ef-2d4e61ec79e2",
+      "name": "Push Grafana Metrics",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst p = $('Extract & Validate JSON').first().json;\nconst logUpdate = {\n  status: 'completed',\n  response_summary: `${p.persona_name} | QC: ${p.qc_score} | ${p.status}`,\n  total_tokens: p.groq_tokens,\n  model_used: p.model_used,\n  latency_ms: p.latency_ms,\n  qc_score: p.qc_score,\n  updated_at: new Date().toISOString()\n};\nreturn [{ json: { log_update: logUpdate, log_id: p.log_id }}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1056
+      ],
+      "id": "6b3bf9ef-561f-4b61-9e99-43ada1d17f0e",
+      "name": "Prepare LLM Log (Post)"
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.NOCODB_BASE_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG_ID }}/llm_logs/{{ $json.log_id }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.log_update) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        240,
+        1056
+      ],
+      "id": "fa500e5b-e7f1-45b6-b4a4-c0131175ebac",
+      "name": "Update LLM Log",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.1,
+      "position": [
+        720,
+        512
+      ],
+      "id": "925c4651-160c-4a7b-8a68-51b4d7782ee7",
+      "name": "Wait All Saves"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst p = $('Extract & Validate JSON').first().json;\nconst ragInfo = $('Format RAG Context').first().json;\n\nlet qdrantOk = false, nocodbOk = false;\ntry { const q = $('Upsert to Qdrant').first().json; qdrantOk = q.result?.status === 'acknowledged' || q.status === 'ok'; } catch(e) {}\ntry { const n = $('Save to NocoDB').first().json; nocodbOk = n.Id != null || n.id != null; } catch(e) {}\n\nreturn [{ json: {\n  status: 'ok',\n  version: 'v3.0_pro',\n  persona: p.persona,\n  meta: {\n    persona_name: p.persona_name,\n    segment: p.segment,\n    project_id: p.project_id,\n    qc_score: p.qc_score,\n    validation_status: p.status,\n    issues: p.issues,\n    priority_score: p.priority_score,\n    prompt_version: p.prompt_version,\n    model_used: p.model_used,\n    groq_tokens: p.groq_tokens,\n    latency_ms: p.latency_ms,\n    raw_content_length: p.raw_content_length,\n    total_queries: p.total_queries,\n    hunt_levels: p.hunt_ladder_levels,\n    rag: {\n      sources: ragInfo.sources_count,\n      top_score: ragInfo.top_score,\n      quality: ragInfo.rag_quality,\n      has_competitor_data: ragInfo.has_competitor_data,\n      has_intent_data: ragInfo.has_intent_data\n    },\n    storage: {\n      qdrant_saved: qdrantOk,\n      nocodb_saved: nocodbOk\n    }\n  },\n  timestamp: new Date().toISOString()\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        512
+      ],
+      "id": "321cdbfc-bfaa-4114-a780-579770255e10",
+      "name": "Build Response"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "X-QC-Score",
+                "value": "={{ $json.meta.qc_score }}"
+              },
+              {
+                "name": "X-Workflow-Version",
+                "value": "v3.0"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1200,
+        512
+      ],
+      "id": "85a17c03-7be9-4d3e-8747-ebd4efa5a813",
+      "name": "Return Persona"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Cron Weekly Update": {
+      "main": [
+        [
+          {
+            "node": "Fetch Active Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Active Projects": {
+      "main": [
+        [
+          {
+            "node": "Split Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Projects": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Get Query Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Query Embedding": {
+      "main": [
+        [
+          {
+            "node": "Search seo_personas",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Search competitor_audiences",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Search search_intents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search seo_personas": {
+      "main": [
+        [
+          {
+            "node": "Wait All RAG Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search competitor_audiences": {
+      "main": [
+        [
+          {
+            "node": "Wait All RAG Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Wait All RAG Results": {
+      "main": [
+        [
+          {
+            "node": "Format RAG Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format RAG Context": {
+      "main": [
+        [
+          {
+            "node": "Build Prompt v3.0",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt v3.0": {
+      "main": [
+        [
+          {
+            "node": "Prepare LLM Log (Pre)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LLM Log (Pre)": {
+      "main": [
+        [
+          {
+            "node": "Save LLM Log (Pre)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save LLM Log (Pre)": {
+      "main": [
+        [
+          {
+            "node": "Prepare LLM Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LLM Call": {
+      "main": [
+        [
+          {
+            "node": "Groq LLM Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq LLM Call": {
+      "main": [
+        [
+          {
+            "node": "Extract & Validate JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract & Validate JSON": {
+      "main": [
+        [
+          {
+            "node": "QC Score Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QC Score Router": {
+      "main": [
+        [
+          {
+            "node": "Prepare Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Persona Embedding",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare NocoDB Row",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Metrics",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare LLM Log (Post)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Alert": {
+      "main": [
+        [
+          {
+            "node": "Send Email Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Email Alert": {
+      "main": [
+        [
+          {
+            "node": "Get Persona Embedding",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare NocoDB Row",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Metrics",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare LLM Log (Post)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Persona Embedding": {
+      "main": [
+        [
+          {
+            "node": "Prepare Qdrant Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Qdrant Upsert": {
+      "main": [
+        [
+          {
+            "node": "Upsert to Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare NocoDB Row": {
+      "main": [
+        [
+          {
+            "node": "Save to NocoDB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Metrics": {
+      "main": [
+        [
+          {
+            "node": "Push Grafana Metrics",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LLM Log (Post)": {
+      "main": [
+        [
+          {
+            "node": "Update LLM Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert to Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Wait All Saves",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to NocoDB": {
+      "main": [
+        [
+          {
+            "node": "Wait All Saves",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Wait All Saves": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Return Persona",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "89645eef-1938-4e86-a68b-c63b5f81d035",
+  "meta": {
+    "instanceId": "e400d94cd35057382ffd98f35f5f609f9bd3f2676425b3672d90c1a1c4917652"
+  },
+  "id": "5mptHzkbSpSNwKG6",
+  "tags": [
+    {
+      "updatedAt": "2026-03-26T08:20:35.632Z",
+      "createdAt": "2026-03-26T08:20:35.632Z",
+      "id": "kdu2vN2me2Ec78M6",
+      "name": "step_00"
+    },
+    {
+      "updatedAt": "2026-03-30T15:08:54.557Z",
+      "createdAt": "2026-03-30T15:08:54.557Z",
+      "id": "kmx2W4SUpBuXd6qu",
+      "name": "SEO_v3.0"
+    },
+    {
+      "updatedAt": "2026-03-30T15:08:54.560Z",
+      "createdAt": "2026-03-30T15:08:54.560Z",
+      "id": "UARzQVpXP6CQ8AkD",
+      "name": "Production"
+    }
+  ]
+}
