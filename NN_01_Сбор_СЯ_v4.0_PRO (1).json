@@ -1,0 +1,1250 @@
+{
+  "name": "NN_01_Сбор_СЯ_v4.0_PRO",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "collect-sy",
+        "responseMode": "responseNode",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "X-Workflow-Version",
+                "value": "v3.0_pro"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -2768,
+        400
+      ],
+      "id": "8361a91d-bf56-4594-a348-533c22572f4c",
+      "name": "Webhook",
+      "webhookId": "collect-sy-v3"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "months"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -2768,
+        208
+      ],
+      "id": "6090b21c-cf46-4dbe-ab1e-61cfcbdea7b9",
+      "name": "Cron Monthly Update"
+    },
+    {
+      "parameters": {
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/mrr8j52dx71oi3y",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "={{ $env.NOCODB_TOKEN }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -2560,
+        208
+      ],
+      "id": "07d8df51-de49-445a-8521-f22437a4eae3",
+      "name": "Fetch Active Projects",
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const projects = $input.first().json.list || $input.first().json || [];\nif (!Array.isArray(projects) || projects.length === 0) {\n  throw new Error('Нет активных проектов для обновления СЯ');\n}\nreturn projects.map(p => ({ json: {\n  niche: p.niche, city: p.city, project_id: p.project_id || p.Id,\n  seed_keywords: p.seed_keywords ? JSON.parse(p.seed_keywords) : [],\n  max_keywords: p.max_keywords || 500,\n  source: 'cron'\n}}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2368,
+        208
+      ],
+      "id": "f7d43494-5e07-43e5-b640-d4485b3fd503",
+      "name": "Split Projects"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst { niche, city, project_id, seed_keywords, max_keywords, source } = body;\n\nif (!niche || typeof niche !== 'string' || niche.length < 2 || niche.length > 200)\n  throw new Error('Поле \"niche\" обязательно (2-200 символов)');\nif (!city || typeof city !== 'string')\n  throw new Error('Поле \"city\" обязательно');\nif (!project_id)\n  throw new Error('Поле \"project_id\" обязательно');\n\n// Sanitize inputs\nconst sanitize = (s) => s.replace(/[<>{}\\\\\"'`;]/g, '').trim();\nconst cleanNiche = sanitize(niche);\nconst cleanCity = sanitize(city);\n\nlet seeds = Array.isArray(seed_keywords) && seed_keywords.length > 0\n  ? seed_keywords.map(s => sanitize(String(s))).filter(Boolean)\n  : [\n      cleanNiche + ' ' + cleanCity, cleanNiche, cleanNiche + ' цена',\n      cleanNiche + ' стоимость', cleanNiche + ' отзывы', cleanNiche + ' рядом',\n      cleanNiche + ' недорого', cleanNiche + ' заказать', cleanNiche + ' услуги',\n      cleanNiche + ' рейтинг', cleanNiche + ' лучший ' + cleanCity,\n      cleanNiche + ' адреса ' + cleanCity\n    ];\n\nconst regionMap = {\n  'Москва': 213, 'Санкт-Петербург': 2, 'Новосибирск': 65,\n  'Екатеринбург': 54, 'Казань': 43, 'Нижний Новгород': 47,\n  'Краснодар': 35, 'Челябинск': 56, 'Самара': 51, 'Ростов-на-Дону': 39,\n  'Уфа': 172, 'Красноярск': 62, 'Пермь': 50, 'Воронеж': 36, 'Волгоград': 38,\n  'Тюмень': 55, 'Омск': 66, 'Саратов': 194, 'Тольятти': 240, 'Барнаул': 197\n};\n\nconst regionId = regionMap[cleanCity] || 213;\nconst startTime = Date.now();\n\nreturn [{ json: {\n  niche: cleanNiche, city: cleanCity, project_id: String(project_id),\n  seeds, max_keywords: Math.min(Math.max(parseInt(max_keywords) || 500, 50), 2000),\n  region_id: regionId,\n  embed_query: cleanNiche + ' ' + cleanCity + ' семантическое ядро SEO кластеризация',\n  source: source || 'webhook',\n  start_time: startTime,\n  workflow_version: 'v4.0_pro',\n  attempt: body.attempt || 1\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2160,
+        400
+      ],
+      "id": "28bcd545-8fc5-4e14-bc60-b0c17efb7b6d",
+      "name": "Validate & Sanitize Input"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Validate & Sanitize Input').first().json;\nreturn [{ json: {\n  ...data,\n  wordstat_payload: {\n    phrases: data.seeds,\n    regions: [data.region_id],\n    numPhrases: 100\n  }\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1920,
+        400
+      ],
+      "id": "6641b451-6cda-4edc-9537-2c667b33d869",
+      "name": "Prepare Wordstat"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.wordstat.yandex.net/v1/topRequests",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.wordstat_payload }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 1
+            }
+          },
+          "timeout": 20000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1680,
+        400
+      ],
+      "id": "30e45c52-0b75-4862-a4ff-939e082d1aa6",
+      "name": "Wordstat API",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "makJxw2eoKhfdLZ0",
+          "name": "Yandex Wordstat"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"bge-m3\",\n  \"prompt\": {{ JSON.stringify($('Validate & Sanitize Input').first().json.embed_query) }}\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1920,
+        112
+      ],
+      "id": "3626ccab-22a8-4b4a-947c-4c4a9aa8fde8",
+      "name": "Get Query Embedding",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/seo_niche_analyses/points/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "=riVOt6HsFhmT6jeCg3z3dNMT0xeDRCVnB39FOjGWO8YG87rL"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($input.first().json.embedding) }},\n  \"limit\": 5,\n  \"with_payload\": true,\n  \"score_threshold\": 0.35,\n  \"filter\": { \"must_not\": [{ \"key\": \"project_id\", \"match\": { \"value\": \"{{ $('Validate & Sanitize Input').first().json.project_id }}\" } }] }\n}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1680,
+        112
+      ],
+      "id": "27f72c06-0948-427b-9f4a-ac9745e24d68",
+      "name": "RAG Search Niche Analyses"
+    },
+    {
+      "parameters": {
+        "jsCode": "let ragResults = [];\ntry { ragResults = $('RAG Search Niche Analyses').first().json.result || []; } catch(e) {}\n\nlet context = '';\nif (ragResults.length > 0) {\n  context = '=== ОПЫТ КЛАСТЕРИЗАЦИИ ПОХОЖИХ НИШ (RAG) ===\\n\\n';\n  ragResults.forEach((r, i) => {\n    const p = r.payload || {};\n    context += `Проект ${i+1} (сходство: ${Math.round(r.score*100)}%):\\n`;\n    context += `  Ниша: ${p.niche||'?'}, город: ${p.city||'?'}\\n`;\n    context += `  Кластеров: ${p.clusters_count||'?'}, ключей: ${p.total_keywords||'?'}\\n`;\n    if (p.clusters_summary) {\n      const summary = typeof p.clusters_summary === 'string' \n        ? p.clusters_summary.substring(0, 600) \n        : JSON.stringify(p.clusters_summary).substring(0, 600);\n      context += `  Структура: ${summary}\\n`;\n    }\n    context += '---\\n';\n  });\n  context += '=== КОНЕЦ RAG КОНТЕКСТА ===';\n}\n\nreturn [{ json: {\n  rag_context: context || 'Нет данных из прошлых проектов — первый проект в этой нише.',\n  rag_sources: ragResults.length,\n  rag_top_score: ragResults[0]?.score || 0,\n  rag_avg_score: ragResults.length > 0 ? (ragResults.reduce((s,r) => s + r.score, 0) / ragResults.length).toFixed(3) : 0\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1440,
+        112
+      ],
+      "id": "57d19755-73e7-45ea-a019-065663d3aedb",
+      "name": "Format RAG Context"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        -1440,
+        400
+      ],
+      "id": "4e4e5922-a86d-486a-bcaf-991b72a7e12b",
+      "name": "Merge Wordstat + RAG"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nlet wordstatResponse = {};\ntry { wordstatResponse = $('Wordstat API').first().json; } catch(e) {}\nconst ragInfo = $('Format RAG Context').first().json;\nconst validate = $('Validate & Sanitize Input').first().json;\n\nconst results = Array.isArray(wordstatResponse) ? wordstatResponse : [wordstatResponse];\nconst keywords = [];\nfor (const result of results) {\n  const topRequests = result.topRequests || result.phrases || [];\n  for (const item of topRequests) {\n    const phrase = (item.phrase || item.keyword || '').toLowerCase().trim();\n    const count = item.count || item.frequency || item.shows || 0;\n    if (phrase && phrase.length >= 3 && count >= 5) {\n      keywords.push({ keyword: phrase, frequency: count });\n    }\n  }\n}\n\n// Deduplicate\nconst unique = {};\nfor (const k of keywords) {\n  if (!unique[k.keyword] || unique[k.keyword].frequency < k.frequency) {\n    unique[k.keyword] = k;\n  }\n}\n\nconst kwArray = Object.values(unique)\n  .sort((a, b) => b.frequency - a.frequency)\n  .slice(0, validate.max_keywords);\n\nif (kwArray.length < 5) {\n  throw new Error(`Wordstat вернул слишком мало ключей (${kwArray.length}). Проверьте niche/city.`);\n}\n\nconst kwLines = kwArray.map(k => k.keyword + '|' + k.frequency).join('\\n');\n\nconst systemPrompt = `Ты Senior SEO-специалист по российскому рынку (Яндекс + Google). Год: 2026.\n\nЗАДАЧА: кластеризация семантического ядра для сайта.\n\n${ragInfo.rag_context}\n\nПРАВИЛА КЛАСТЕРИЗАЦИИ:\n1. Один кластер = одна посадочная страница (принцип 1:1)\n2. Главный ключ кластера = самый частотный и точно описывающий intent страницы\n3. Коммерческие кластеры приоритетнее информационных\n4. Ключ НЕ может быть в двух кластерах (строгая дедупликация)\n5. Минимум 3 ключа в кластере. Максимум 30 кластеров.\n6. Для каждого ключа обязательно определи intent_type\n7. Для каждого кластера придумай AEO-запрос (как спросят AI-ассистента)\n8. recommended_url должен быть ЧПУ на транслите\n9. Приоритет кластера: 1 = самый важный для бизнеса\n10. Для каждого ключа укажи поле engine: \"yandex\" | \"google\" | \"both\"\n\nМАРКИРОВКА ПОИСКОВЫХ СИСТЕМ:\n- \"yandex\": запросы с городом, «рядом», «рейтинг», «отзывы», разговорные, «недорого»\n- \"google\": англицизмы, «best», «vs», «review», длинные информационные, технические  \n- \"both\": общие коммерческие запросы, универсальные\n\nТИПЫ КЛАСТЕРОВ:\n- commercial: услуги, цены, заказ (максимальный приоритет)\n- informational: статьи, гайды, вопросы\n- navigation: контакты, о компании, филиалы\n- local: гео-запросы с районами/станциями метро/улицами\n\nINTENT ТИПЫ КЛЮЧЕЙ:\n- transactional: купить, заказать, цена, стоимость, записаться\n- informational: как, что такое, почему, отзывы, сколько\n- navigational: бренд, адрес, сайт, телефон\n- commercial_investigation: лучший, рейтинг, сравнить, топ, какой выбрать\n\nJSON ФОРМАТ ОТВЕТА (строго без markdown):\n{\n  \"clusters\": [\n    {\n      \"cluster_name\": \"название\",\n      \"main_keyword\": \"главный ключ\",\n      \"page_type\": \"commercial\",\n      \"priority\": 1,\n      \"aeo_query\": \"как спросят AI-ассистента\",\n      \"recommended_url\": \"/transliterated-url/\",\n      \"keywords\": [\n        {\"keyword\": \"ключ\", \"frequency\": 100, \"intent_type\": \"transactional\", \"engine\": \"both\"}\n      ]\n    }\n  ]\n}`;\n\nconst userPrompt = `Кластеризуй семантическое ядро.\\n\\nНИША: ${validate.niche}\\nГОРОД: ${validate.city}\\nВСЕГО КЛЮЧЕЙ: ${kwArray.length}\\n\\nКЛЮЧЕВЫЕ СЛОВА (keyword|frequency):\\n${kwLines}`;\n\nconst payload = {\n  model: 'llama-3.3-70b-versatile',\n  max_tokens: 8000,\n  temperature: 0.25,\n  top_p: 0.9,\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: systemPrompt },\n    { role: 'user', content: userPrompt }\n  ]\n};\n\nreturn [{ json: {\n  groq_payload: payload,\n  keywords_count: kwArray.length,\n  keywords_sample: kwArray.slice(0, 10),\n  niche: validate.niche,\n  city: validate.city,\n  project_id: validate.project_id,\n  start_time: validate.start_time,\n  attempt: validate.attempt || 1\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        400
+      ],
+      "id": "2268378a-0955-403d-bea1-92bf7e902bc5",
+      "name": "Build Groq Prompt v4.0"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.groq_payload }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -960,
+        400
+      ],
+      "id": "565707ce-532b-45c5-8531-87d6d3d88ebd",
+      "name": "Groq Cluster Keywords",
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ufwYtnED96pshQu8",
+          "name": "Groq API"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputData = $input.first().json;\nif (inputData.error || inputData.code === 'ERR_BAD_REQUEST' || !inputData.choices) {\n  return [{ json: {\n    clusters: [], clusters_count: 0,\n    total_keywords_original: 0, total_keywords_clustered: 0,\n    commercial_clusters: 0, informational_clusters: 0, local_clusters: 0,\n    aeo_coverage: 0, project_id: '', niche: '', city: '',\n    qc_score: 0, issues: ['LLM call failed completely'],\n    status: 'failed', groq_tokens: 0, latency_ms: 0,\n    rag_sources: 0, timestamp: new Date().toISOString(),\n    engine_tagged: 0, engine_total: 0, attempt: 1\n  }}];\n}\n\nconst groqResponse = $input.first().json;\nconst prevData = $('Build Groq Prompt v4.0').first().json;\n\n// === ROBUST JSON PARSING ===\nlet rawContent = groqResponse?.choices?.[0]?.message?.content || '';\nconst tokens = groqResponse?.usage?.total_tokens || 0;\n\n// Clean LLM output\nlet cleanJson = rawContent\n  .replace(/^\\xEF\\xBB\\xBF/, '')          // BOM\n  .replace(/```json\\s*/gi, '')             // markdown json blocks\n  .replace(/```\\s*/gi, '')                 // markdown blocks\n  .replace(/^[^{\\[]*/, '')                 // junk before JSON\n  .replace(/[^}\\]]*$/, '')                 // junk after JSON\n  .replace(/,\\s*([}\\]])/g, '$1')           // trailing commas\n  .trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(cleanJson);\n} catch (err1) {\n  // Attempt to extract JSON object\n  const match = cleanJson.match(/\\{[\\s\\S]+\\}/);\n  if (match) {\n    try { parsed = JSON.parse(match[0]); }\n    catch (err2) {\n      // Try fixing common issues\n      let fixed = match[0]\n        .replace(/(['\"])\\s*:\\s*(['\"])/g, '\"$2')  \n        .replace(/\\n/g, '\\\\n')\n        .replace(/\\t/g, '\\\\t');\n      try { parsed = JSON.parse(fixed); }\n      catch (err3) {\n        throw new Error('Groq вернул невалидный JSON после 3 попыток парсинга. Первые 500 символов: ' + rawContent.slice(0, 500));\n      }\n    }\n  } else {\n    throw new Error('JSON не найден в ответе Groq. Первые 500 символов: ' + rawContent.slice(0, 500));\n  }\n}\n\n// === CLUSTER VALIDATION & NORMALIZATION ===\nconst validPageTypes = ['commercial', 'informational', 'navigation', 'local'];\nconst validIntents = ['transactional', 'informational', 'navigational', 'commercial_investigation'];\n\nconst transliterate = (text) => {\n  const map = {'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh','з':'z','и':'i','й':'j','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya',' ':'-'};\n  return text.toLowerCase().split('').map(c => map[c] !== undefined ? map[c] : c).join('').replace(/[^a-z0-9-]/g, '').replace(/-+/g, '-').replace(/^-|-$/g, '');\n};\n\nconst seenKeywords = new Set();\nconst clusters = (parsed.clusters || []).map((c, idx) => {\n  const keywords = Array.isArray(c.keywords) ? c.keywords\n    .map(k => {\n      const kw = (typeof k === 'string' ? k : (k.keyword || '')).toLowerCase().trim();\n      const freq = typeof k === 'string' ? 0 : (parseInt(k.frequency) || 0);\n      const intent = typeof k === 'string' ? 'informational' : (validIntents.includes(k.intent_type) ? k.intent_type : 'informational');\n      return { keyword: kw, frequency: freq, intent_type: intent };\n    })\n    .filter(k => {\n      if (!k.keyword || k.keyword.length < 2 || seenKeywords.has(k.keyword)) return false;\n      seenKeywords.add(k.keyword);\n      return true;\n    }) : [];\n\n  const mainKw = c.main_keyword || (keywords[0]?.keyword) || 'Кластер ' + (idx + 1);\n  const slug = c.recommended_url || '/' + transliterate(mainKw) + '/';\n\n  return {\n    cluster_name: c.cluster_name || 'Кластер ' + (idx + 1),\n    main_keyword: mainKw,\n    page_type: validPageTypes.includes(c.page_type) ? c.page_type : 'commercial',\n    priority: Math.min(Math.max(parseInt(c.priority) || (idx + 1), 1), 30),\n    keywords,\n    keywords_count: keywords.length,\n    total_frequency: keywords.reduce((s, k) => s + k.frequency, 0),\n    recommended_url: slug.startsWith('/') ? slug : '/' + slug,\n    aeo_query: c.aeo_query || ''\n  };\n}).filter(c => c.keywords.length >= 1);\n\n// === QC SCORING ===\nconst totalKw = clusters.reduce((sum, c) => sum + c.keywords_count, 0);\nconst issues = [];\nif (clusters.length === 0) issues.push('0 кластеров');\nif (clusters.length > 30) issues.push(`${clusters.length} кластеров (макс 30)`);\nif (totalKw < 10) issues.push(`Всего ${totalKw} ключей (мин 10)`);\nconst commercialClusters = clusters.filter(c => c.page_type === 'commercial').length;\nif (commercialClusters === 0) issues.push('Нет коммерческих кластеров');\nconst aeoCount = clusters.filter(c => c.aeo_query && c.aeo_query.length > 10).length;\nif (aeoCount < clusters.length * 0.5) issues.push(`AEO только у ${aeoCount}/${clusters.length} кластеров`);\nconst duplicateCheck = new Set(clusters.map(c => c.main_keyword));\nif (duplicateCheck.size < clusters.length) issues.push('Дублирующиеся main_keyword');\n\n// Check engine tagging\nlet engineTagged = 0, engineTotal = 0;\nclusters.forEach(c => {\n  c.keywords.forEach(k => {\n    engineTotal++;\n    if (k.engine && ['yandex','google','both'].includes(k.engine)) engineTagged++;\n  });\n});\nif (engineTotal > 0 && engineTagged < engineTotal * 0.3) {\n  issues.push(`Engine tagging: ${engineTagged}/${engineTotal}`);\n}\n\nconst qc_score = Math.max(0, 100 - (issues.length * 15));\nconst latency_ms = Date.now() - (prevData.start_time || Date.now());\n\nreturn [{ json: {\n  clusters, clusters_count: clusters.length,\n  total_keywords_original: prevData.keywords_count,\n  total_keywords_clustered: totalKw,\n  commercial_clusters: commercialClusters,\n  informational_clusters: clusters.filter(c => c.page_type === 'informational').length,\n  local_clusters: clusters.filter(c => c.page_type === 'local').length,\n  aeo_coverage: clusters.length > 0 ? Math.round((aeoCount / clusters.length) * 100) : 0,\n  project_id: prevData.project_id, niche: prevData.niche, city: prevData.city,\n  qc_score, issues: issues.length > 0 ? issues : null,\n  status: qc_score >= 70 ? 'ready' : (qc_score >= 40 ? 'review' : 'failed'),\n  groq_tokens: tokens,\n  latency_ms,\n  rag_sources: $('Format RAG Context').first().json.rag_sources || 0,\n  timestamp: new Date().toISOString(),\n  engine_tagged: engineTagged,\n  engine_total: engineTotal,\n  attempt: prevData.attempt || 1\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -720,
+        400
+      ],
+      "id": "a69e8a27-fe74-4809-9b40-9b31ab26f0ba",
+      "name": "Parse & Validate Clusters v3"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "qc-check",
+              "leftValue": "={{ $json.qc_score }}",
+              "rightValue": 40,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -480,
+        400
+      ],
+      "id": "6f8a9e30-15fa-4625-beea-6195f8cbe4bc",
+      "name": "QC Score Router"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Parse & Validate Clusters v3').first().json;\nreturn [{ json: {\n  subject: `⚠️ QC FAILED: ${data.niche} / ${data.city} (score: ${data.qc_score})`,\n  body: `Workflow: NN_01_Сбор_СЯ_v3.0_PRO\\nProject: ${data.project_id}\\nQC Score: ${data.qc_score}\\nIssues: ${(data.issues || []).join(', ')}\\nClusters: ${data.clusters_count}\\nKeywords: ${data.total_keywords_clustered}\\nTimestamp: ${data.timestamp}`,\n  error_data: data\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        608
+      ],
+      "id": "5bce5e6a-9075-4942-8f01-6a34b2f389b2",
+      "name": "Prepare QC Alert"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'qc_failed', qc_score: $('Parse & Validate Clusters v3').first().json.qc_score, issues: $('Parse & Validate Clusters v3').first().json.issues, clusters_count: $('Parse & Validate Clusters v3').first().json.clusters_count }) }}",
+        "options": {
+          "responseCode": 422
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        0,
+        608
+      ],
+      "id": "63567f44-da6a-42ed-a26e-8223a24477eb",
+      "name": "Return QC Failed"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Parse & Validate Clusters v3').first().json;\n\n// 4 parallel branches: NocoDB Clusters, Qdrant Summary, Qdrant Intents, LLM Log\nreturn [{ json: { ...data, branch: 'orchestrator' } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -240,
+        400
+      ],
+      "id": "b785c684-aa8a-4351-961b-9b62f18f638f",
+      "name": "Orchestrate Save"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nreturn data.clusters.map(cluster => ({\n  json: {\n    project_id: data.project_id, niche: data.niche, city: data.city,\n    cluster_name: cluster.cluster_name, main_keyword: cluster.main_keyword,\n    page_type: cluster.page_type, priority: cluster.priority,\n    keywords: JSON.stringify(cluster.keywords),\n    keywords_count: cluster.keywords_count, total_frequency: cluster.total_frequency,\n    recommended_url: cluster.recommended_url, aeo_query: cluster.aeo_query,\n    status: 'active', version: 'v4.0', created: data.timestamp\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        208
+      ],
+      "id": "e9e880cb-84e9-485f-8d60-45c9614714d6",
+      "name": "Prepare NocoDB Batch"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/mrr8j52dx71oi3y",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImxhbWlhc2VhNTBAeWFob28uY29tIiwiZGlzcGxheV9uYW1lIjpudWxsLCJhdmF0YXIiOm51bGwsInVzZXJfbmFtZSI6bnVsbCwiaWQiOiJ1c3dheDM1bHl2ZnYwd3MwIiwicm9sZXMiOnsib3JnLWxldmVsLWNyZWF0b3IiOnRydWUsInN1cGVyIjp0cnVlfSwidG9rZW5fdmVyc2lvbiI6ImZlOTAyMWMyNTIxNmQ0ZWQwNzRlZDY3YjA1Yjk3MzM3Y2JiNDU4ZDRjMGI4ZWMxOGIzMTU5MmU4ZDQ5MDhkZGE1Mjc3Mzc3NzNmNTQwODdiIiwiaWF0IjoxNzc1MTE4NjY0LCJleHAiOjE3NzUxNTQ2NjR9.jwHZu_JqJXQE0D_gTX7I8o8ekrs4JlUYPfeOKmuedr8"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        240,
+        208
+      ],
+      "id": "4e17a61f-c6d0-4b21-82d7-d4111f0f94ae",
+      "name": "NocoDB Save Clusters",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst crypto = require('crypto');\n\nconst topClusters = data.clusters.filter(c => c.page_type === 'commercial').slice(0, 10)\n  .map(c => `${c.cluster_name}: ${c.main_keyword} (${c.total_frequency} показов/мес)`).join('\\n');\nconst aeoQueries = data.clusters.filter(c => c.aeo_query).slice(0, 5).map(c => c.aeo_query).join('\\n');\n\nconst nicheText = `Ниша: ${data.niche}\\nГород: ${data.city}\\nКластеров: ${data.clusters_count}\\nВсего ключей: ${data.total_keywords_clustered}\\nКоммерческих: ${data.commercial_clusters}\\n\\nТоп коммерческих кластеров:\\n${topClusters}\\n\\nAEO запросы:\\n${aeoQueries}\\n\\nТоп-20 ключей: ${data.clusters.flatMap(c => c.keywords.map(k => k.keyword)).slice(0, 20).join(', ')}`;\n\n// Deterministic ID based on project + type\nconst pointId = crypto.createHash('md5')\n  .update(`${data.project_id}:semantic_core:${data.niche}:${data.city}`)\n  .digest('hex').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');\n\nreturn [{ json: {\n  project_id: data.project_id, niche: data.niche, city: data.city,\n  niche_text: nicheText, clusters_count: data.clusters_count,\n  total_keywords: data.total_keywords_clustered,\n  clusters_summary: JSON.stringify(data.clusters.map(c => ({\n    name: c.cluster_name, type: c.page_type, kw: c.main_keyword, freq: c.total_frequency, url: c.recommended_url\n  }))),\n  point_id: pointId\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        400
+      ],
+      "id": "b45b9a0e-59eb-4904-8320-5d3354e5a91b",
+      "name": "Prepare Qdrant Summary"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"bge-m3\",\n  \"prompt\": {{ JSON.stringify($json.niche_text) }}\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        240,
+        400
+      ],
+      "id": "74fb5393-b276-4c25-b1bb-2564f9d9981a",
+      "name": "Embed Summary",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $('Prepare Qdrant Summary').first().json;\nconst vector = $input.first().json.embedding;\nif (!vector || !Array.isArray(vector)) throw new Error('Invalid summary embedding vector');\n\nconst payload = {\n  points: [{\n    id: prev.point_id,\n    vector: vector,\n    payload: {\n      project_id: prev.project_id, niche: prev.niche, city: prev.city,\n      type: 'semantic_core_analysis', clusters_count: prev.clusters_count,\n      total_keywords: prev.total_keywords, clusters_summary: prev.clusters_summary,\n      version: 'v4.0', created_at: new Date().toISOString()\n    }\n  }]\n};\nreturn [{ json: { qdrant_payload: payload }}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        400
+      ],
+      "id": "bef03fb8-5946-4c90-8443-d5731ad2afca",
+      "name": "Prepare Qdrant Upsert"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/seo_niche_analyses/points",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "=riVOt6HsFhmT6jeCg3z3dNMT0xeDRCVnB39FOjGWO8YG87rL"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.qdrant_payload }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        720,
+        400
+      ],
+      "id": "3a086774-a00d-4c6c-9149-d6bde17f3ec7",
+      "name": "Save to Qdrant (Upsert)",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Parse & Validate Clusters v3').first().json;\nconst crypto = require('crypto');\n\nconst intents = [];\nfor (const cluster of data.clusters) {\n  for (const kw of cluster.keywords) {\n    if (kw.keyword) {\n      intents.push({\n        query: kw.keyword, intent_type: kw.intent_type,\n        content_format: cluster.page_type === 'commercial' ? 'landing' : (cluster.page_type === 'informational' ? 'blog' : 'page'),\n        hunt_level: kw.intent_type === 'transactional' ? 5 : (kw.intent_type === 'commercial_investigation' ? 4 : (kw.intent_type === 'navigational' ? 3 : 2)),\n        cluster_name: cluster.cluster_name, recommended_url: cluster.recommended_url\n      });\n    }\n  }\n}\n\nconst intentText = intents.slice(0, 50)\n  .map(i => `${i.query} | intent: ${i.intent_type} | format: ${i.content_format} | hunt: ${i.hunt_level} | url: ${i.recommended_url}`)\n  .join('\\n');\n\nconst pointId = crypto.createHash('md5')\n  .update(`${data.project_id}:intent_mapping:${data.niche}:${data.city}`)\n  .digest('hex').replace(/(.{8})(.{4})(.{4})(.{4})(.{12})/, '$1-$2-$3-$4-$5');\n\nreturn [{ json: {\n  intent_text: intentText || 'no intents',\n  intents_count: intents.length,\n  intents_breakdown: {\n    transactional: intents.filter(i => i.intent_type === 'transactional').length,\n    informational: intents.filter(i => i.intent_type === 'informational').length,\n    navigational: intents.filter(i => i.intent_type === 'navigational').length,\n    commercial_investigation: intents.filter(i => i.intent_type === 'commercial_investigation').length\n  },\n  niche: data.niche, city: data.city, project_id: data.project_id,\n  point_id: pointId\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        800
+      ],
+      "id": "8ab80ec4-cd43-4b95-a10a-d21c79d29a5e",
+      "name": "Prepare Intents Batch"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"bge-m3\",\n  \"prompt\": {{ JSON.stringify($json.intent_text) }}\n}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        304,
+        704
+      ],
+      "id": "81bf3b33-5447-45ac-b6b3-370a682501a8",
+      "name": "Embed Intents",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const prev = $('Prepare Intents Batch').first().json;\nconst vector = $input.first().json.embedding;\nif (!vector || !Array.isArray(vector)) throw new Error('Invalid intents embedding');\n\nconst payload = {\n  points: [{\n    id: prev.point_id,\n    vector: vector,\n    payload: {\n      text: prev.intent_text.substring(0, 5000),\n      niche: prev.niche, city: prev.city,\n      project_id: prev.project_id, intents_count: prev.intents_count,\n      intents_breakdown: prev.intents_breakdown,\n      type: 'intent_mapping', version: 'v4.0', created_at: new Date().toISOString()\n    }\n  }]\n};\nreturn [{ json: { qdrant_payload: payload }}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        800
+      ],
+      "id": "7695df13-dd87-4c83-b5b1-42a05a083bbe",
+      "name": "Prepare Intents Save"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/search_intents/points",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.qdrant_payload }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        720,
+        800
+      ],
+      "id": "7e4a23a0-6736-4d06-b237-bc7157754537",
+      "name": "Save Intents to Qdrant",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000,
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "toIbEnCfgxgsvnQm",
+          "name": "Qdrant API"
+        }
+      },
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $('Parse & Validate Clusters v3').first().json;\n\nconst logEntry = {\n  workflow_name: 'NN_01_Сбор_СЯ_v4.0_PRO',\n  workflow_id: 'step_01',\n  project_id: data.project_id,\n  prompt_version: 'v4.0',\n  prompt_type: 'keyword_clustering',\n  input_data: JSON.stringify({\n    niche: data.niche, city: data.city,\n    keywords_original: data.total_keywords_original,\n    keywords_clustered: data.total_keywords_clustered\n  }),\n  response_summary: JSON.stringify({\n    clusters: data.clusters_count,\n    commercial: data.commercial_clusters,\n    aeo_coverage: data.aeo_coverage + '%'\n  }),\n  total_tokens: data.groq_tokens,\n  latency_ms: data.latency_ms,\n  qc_score: data.qc_score,\n  status: data.status,\n  issues: data.issues ? JSON.stringify(data.issues) : null,\n  created_at: data.timestamp\n};\n\nreturn [{ json: { llm_log_payload: logEntry }}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "ff68ebff-51c4-4fa9-9435-bd4440084308",
+      "name": "Prepare LLM Log"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/llm_logs",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImxhbWlhc2VhNTBAeWFob28uY29tIiwiZGlzcGxheV9uYW1lIjpudWxsLCJhdmF0YXIiOm51bGwsInVzZXJfbmFtZSI6bnVsbCwiaWQiOiJ1c3dheDM1bHl2ZnYwd3MwIiwicm9sZXMiOnsib3JnLWxldmVsLWNyZWF0b3IiOnRydWUsInN1cGVyIjp0cnVlfSwidG9rZW5fdmVyc2lvbiI6ImZlOTAyMWMyNTIxNmQ0ZWQwNzRlZDY3YjA1Yjk3MzM3Y2JiNDU4ZDRjMGI4ZWMxOGIzMTU5MmU4ZDQ5MDhkZGE1Mjc3Mzc3NzNmNTQwODdiIiwiaWF0IjoxNzc1MTE4NjY0LCJleHAiOjE3NzUxNTQ2NjR9.jwHZu_JqJXQE0D_gTX7I8o8ekrs4JlUYPfeOKmuedr8"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.llm_log_payload }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        240,
+        0
+      ],
+      "id": "57c604c7-5bbb-4526-b0fb-747f9b06adc6",
+      "name": "Save LLM Log",
+      "alwaysOutputData": true,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst mlPayload = {\n  page_slug: data.clusters?.[0]?.recommended_url || '/',\n  main_keyword: data.clusters?.[0]?.main_keyword || data.niche,\n  has_faq: data.aeo_coverage > 50,\n  has_schema_faq: data.aeo_coverage > 70,\n  has_speakable: false,\n  has_howto: data.clusters?.some(c => c.page_type === 'informational') || false,\n  word_count: data.total_keywords_clustered * 80,\n  h2_count: data.clusters_count || 0,\n  keyword_in_h1: true,\n  has_direct_answer: data.aeo_coverage > 30,\n  answer_length: data.clusters?.filter(c => c.aeo_query).reduce((s, c) => s + c.aeo_query.length, 0) || 0,\n  commercial_ratio: data.clusters_count > 0 ? data.commercial_clusters / data.clusters_count : 0,\n  intent_diversity: Object.keys($('Prepare Intents Batch').first().json.intents_breakdown || {}).filter(k => $('Prepare Intents Batch').first().json.intents_breakdown[k] > 0).length\n};\nreturn [{ json: { ...data, ml_payload: mlPayload }}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        1008
+      ],
+      "id": "4d221ea3-5387-449e-8421-19e7bf6ee33c",
+      "name": "Prepare ML Features"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ml-service:8000/predict/aeo_score",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.ml_payload }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        208,
+        1152
+      ],
+      "id": "512c4596-43bb-4a1b-a0ac-253c668aef50",
+      "name": "ML AEO Prediction",
+      "alwaysOutputData": true,
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const mlInput = $('Prepare ML Features').first().json;\nlet mlResult = {};\ntry { mlResult = $input.first().json || {}; } catch(e) {}\n\nreturn [{ json: {\n  ...mlInput,\n  ml_aeo_score: mlResult.score ?? null,\n  ml_aeo_label: mlResult.label ?? null,\n  ml_confidence: mlResult.confidence ?? null,\n  ml_available: mlResult.score != null\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        1008
+      ],
+      "id": "3ea656ca-d0c6-4de7-bf61-c720864787fe",
+      "name": "Merge ML Result"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        960,
+        400
+      ],
+      "id": "b2ad4682-5465-41f1-89c4-57fe5b7ccd73",
+      "name": "Merge All Results"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst data = $('Parse & Validate Clusters v3').first().json;\nconst ragInfo = $('Format RAG Context').first().json;\n\nlet qdrantOk = false, intentsOk = false, nocodbOk = false, mlData = {};\ntry { const q = $('Save to Qdrant (Upsert)').first().json; qdrantOk = q.status === 'ok' || q.result?.status === 'acknowledged'; } catch(e) {}\ntry { const i = $('Save Intents to Qdrant').first().json; intentsOk = i.status === 'ok' || i.result?.status === 'acknowledged'; } catch(e) {}\ntry { const n = $('NocoDB Save Clusters').first().json; nocodbOk = n.Id != null || n.id != null; } catch(e) {}\ntry { mlData = $('Merge ML Result').first().json; } catch(e) {}\n\nreturn [{ json: {\n  status: 'success',\n  project_id: data.project_id, niche: data.niche, city: data.city,\n  clusters_count: data.clusters_count,\n  keywords_original: data.total_keywords_original,\n  keywords_clustered: data.total_keywords_clustered,\n  commercial_clusters: data.commercial_clusters,\n  aeo_coverage: data.aeo_coverage + '%',\n  qc_score: data.qc_score,\n  validation_status: data.status,\n  issues: data.issues,\n  groq_tokens: data.groq_tokens,\n  attempt: data.attempt || 1,\n  engine_tagging: {\n    tagged: data.engine_tagged || 0,\n    total: data.engine_total || 0\n  },\n  rag_sources: ragInfo.rag_sources,\n  rag_top_score: ragInfo.rag_top_score,\n  saves: {\n    qdrant_summary: qdrantOk,\n    qdrant_intents: intentsOk,\n    nocodb_clusters: nocodbOk\n  },\n  ml: {\n    aeo_score: mlData.ml_aeo_score ?? null,\n    aeo_label: mlData.ml_aeo_label ?? null,\n    confidence: mlData.ml_confidence ?? null,\n    available: mlData.ml_available ?? false\n  },\n  latency_ms: data.latency_ms,\n  version: 'v4.0_pro',\n  timestamp: new Date().toISOString()\n}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        400
+      ],
+      "id": "0dfc35a1-7250-402b-8cee-69e4fd757bc7",
+      "name": "Build Response"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1440,
+        400
+      ],
+      "id": "446d4655-d0d8-4142-b19e-398653b32239",
+      "name": "Return Result"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify(Object.assign({}, $(\"Build Groq Prompt v4.0\").first().json.groq_payload, { model: \"llama-3.3-70b-versatile\" })) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "name": "Fallback LLM Call",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -400,
+        720
+      ],
+      "id": "dd4c384b-b948-490c-83e1-3650ffa4181a",
+      "retryOnFail": false,
+      "alwaysOutputData": true,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ufwYtnED96pshQu8",
+          "name": "Groq API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst data = $('Parse & Validate Clusters v3').first().json;\nconst validate = $('Validate & Sanitize Input').first().json;\n\nreturn [{ json: {\n  ...validate,\n  attempt: (data.attempt || 1) + 1,\n  retry_reason: `QC ${data.qc_score}/100, issues: ${(data.issues||[]).join(', ')}`\n}}];\n"
+      },
+      "name": "Prepare Retry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        912
+      ],
+      "id": "8a50633b-6d41-43ac-856e-1b38e6999180"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "retry-check",
+              "leftValue": "={{ $json.qc_score < 40 && ($json.attempt || 1) < 3 }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "Should Retry?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        112,
+        512
+      ],
+      "id": "2a235409-d160-4aab-af03-43c999d0138a"
+    },
+    {
+      "parameters": {
+        "content": "## Groq Limit !\n"
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1136,
+        672
+      ],
+      "typeVersion": 1,
+      "id": "1603d20f-7420-4627-895b-fc2d31e2af92",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate & Sanitize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron Monthly Update": {
+      "main": [
+        [
+          {
+            "node": "Fetch Active Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Active Projects": {
+      "main": [
+        [
+          {
+            "node": "Split Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Projects": {
+      "main": [
+        [
+          {
+            "node": "Validate & Sanitize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Sanitize Input": {
+      "main": [
+        [
+          {
+            "node": "Prepare Wordstat",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Query Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Wordstat": {
+      "main": [
+        [
+          {
+            "node": "Wordstat API",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wordstat API": {
+      "main": [
+        [
+          {
+            "node": "Merge Wordstat + RAG",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Query Embedding": {
+      "main": [
+        [
+          {
+            "node": "RAG Search Niche Analyses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RAG Search Niche Analyses": {
+      "main": [
+        [
+          {
+            "node": "Format RAG Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format RAG Context": {
+      "main": [
+        [
+          {
+            "node": "Merge Wordstat + RAG",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Wordstat + RAG": {
+      "main": [
+        [
+          {
+            "node": "Build Groq Prompt v4.0",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Groq Prompt v4.0": {
+      "main": [
+        [
+          {
+            "node": "Groq Cluster Keywords",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Cluster Keywords": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate Clusters v3",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Fallback LLM Call",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fallback LLM Call": {
+      "main": [
+        [
+          {
+            "node": "Parse & Validate Clusters v3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse & Validate Clusters v3": {
+      "main": [
+        [
+          {
+            "node": "Should Retry?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Retry?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Retry",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "QC Score Router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Retry": {
+      "main": [
+        [
+          {
+            "node": "Build Groq Prompt v4.0",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "QC Score Router": {
+      "main": [
+        [
+          {
+            "node": "Orchestrate Save",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare QC Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare QC Alert": {
+      "main": [
+        [
+          {
+            "node": "Return QC Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Orchestrate Save": {
+      "main": [
+        [
+          {
+            "node": "Prepare NocoDB Batch",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Qdrant Summary",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare Intents Batch",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare LLM Log",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare ML Features",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare NocoDB Batch": {
+      "main": [
+        [
+          {
+            "node": "NocoDB Save Clusters",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NocoDB Save Clusters": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Qdrant Summary": {
+      "main": [
+        [
+          {
+            "node": "Embed Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Summary": {
+      "main": [
+        [
+          {
+            "node": "Prepare Qdrant Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Qdrant Upsert": {
+      "main": [
+        [
+          {
+            "node": "Save to Qdrant (Upsert)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Qdrant (Upsert)": {
+      "main": [
+        [
+          {
+            "node": "Merge All Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Prepare Intents Batch": {
+      "main": [
+        [
+          {
+            "node": "Embed Intents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Intents": {
+      "main": [
+        [
+          {
+            "node": "Prepare Intents Save",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Intents Save": {
+      "main": [
+        [
+          {
+            "node": "Save Intents to Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare LLM Log": {
+      "main": [
+        [
+          {
+            "node": "Save LLM Log",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare ML Features": {
+      "main": [
+        [
+          {
+            "node": "ML AEO Prediction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ML AEO Prediction": {
+      "main": [
+        [
+          {
+            "node": "Merge ML Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge All Results": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Return Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "c23cd52c-f79f-4ea9-aa1a-0d6fbcdcd236",
+  "meta": {
+    "instanceId": "e400d94cd35057382ffd98f35f5f609f9bd3f2676425b3672d90c1a1c4917652"
+  },
+  "id": "ivp7IcH4f0TSKHuH",
+  "tags": [
+    {
+      "updatedAt": "2026-03-31T07:54:06.032Z",
+      "createdAt": "2026-03-31T07:54:06.032Z",
+      "id": "Gov17eQm7RYlcZQF",
+      "name": "v3.0_PRO"
+    },
+    {
+      "updatedAt": "2026-03-30T15:08:54.557Z",
+      "createdAt": "2026-03-30T15:08:54.557Z",
+      "id": "kmx2W4SUpBuXd6qu",
+      "name": "SEO_v3.0"
+    },
+    {
+      "updatedAt": "2026-03-26T12:17:36.823Z",
+      "createdAt": "2026-03-26T12:17:36.823Z",
+      "id": "L5yKaGtzseLq3knv",
+      "name": "step_01"
+    }
+  ]
+}
