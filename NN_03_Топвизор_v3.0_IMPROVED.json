@@ -1,0 +1,537 @@
+{
+  "name": "NN_03_Топвизор_v3.0_IMPROVED",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "topvisor-setup",
+        "responseMode": "responseNode",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "X-Workflow-Version",
+                "value": "v3.0"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-176, 192],
+      "id": "9986422e-0dee-46ba-8104-28c600dcb730",
+      "name": "Webhook",
+      "webhookId": "topvisor-setup-v3"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * 1"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-176, -100],
+      "id": "ec4b5679-4d3c-458f-b566-3a7445840d7f",
+      "name": "Cron Weekly Monday 6AM"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://nocodb:8080/api/v1/auth/user/signin",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"email\": \"{{ $env.NOCODB_EMAIL }}\",\n  \"password\": \"{{ $env.NOCODB_PASSWORD }}\"\n}",
+        "options": { "timeout": 10000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [64, -100],
+      "id": "cron-auth-001",
+      "name": "NocoDB Auth (Cron)",
+      "onError": "continueRegularOutput",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/projects_registry",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "where", "value": "(status,eq,active)" },
+            { "name": "fields", "value": "project_id,city,topvisor_project_id,domain" },
+            { "name": "limit", "value": "50" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xc-auth", "value": "={{ $('NocoDB Auth (Cron)').first().json.token }}" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [304, -100],
+      "id": "cron-projects-001",
+      "name": "NocoDB Get Active Projects",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst projects = data.list || [];\n\nif (projects.length === 0) {\n  return [{ json: { error: 'No active projects found', skip: true } }];\n}\n\nreturn projects.map(p => ({\n  json: {\n    project_id: p.project_id,\n    topvisor_project_id: p.topvisor_project_id || 24810550,\n    city: p.city || 'Москва',\n    domain: p.domain,\n    is_cron_trigger: true,\n    workflow_version: 'v3.0'\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [544, -100],
+      "id": "cron-split-001",
+      "name": "Split Projects for Iteration",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body || $input.first().json;\nconst { project_id, topvisor_project_id, city, is_cron_trigger } = body;\n\n// ── Auth check (webhook only) ──\nconst headers = $input.first().json.headers || {};\nif (!is_cron_trigger) {\n  const authHeader = headers.authorization || headers.Authorization || '';\n  const expectedToken = $env.WEBHOOK_SECRET || '';\n  if (expectedToken && authHeader !== `Bearer ${expectedToken}`) {\n    throw new Error('Unauthorized: invalid or missing Bearer token');\n  }\n}\n\nif (!project_id) throw new Error('project_id обязателен');\n\n// ── Расширенная карта регионов (15 городов) ──\nconst regionMap = {\n  'Москва':            { yandex: 213,  google: 2840 },\n  'Санкт-Петербург':   { yandex: 2,    google: 2841 },\n  'Новосибирск':       { yandex: 65,   google: 2842 },\n  'Екатеринбург':      { yandex: 54,   google: 2843 },\n  'Казань':            { yandex: 43,   google: 2844 },\n  'Нижний Новгород':   { yandex: 47,   google: 2845 },\n  'Краснодар':         { yandex: 35,   google: 2846 },\n  'Челябинск':         { yandex: 56,   google: 2847 },\n  'Самара':            { yandex: 51,   google: 2848 },\n  'Ростов-на-Дону':    { yandex: 39,   google: 2849 },\n  'Воронеж':           { yandex: 36,   google: 2850 },\n  'Уфа':               { yandex: 172,  google: 2851 },\n  'Красноярск':        { yandex: 62,   google: 2852 },\n  'Пермь':             { yandex: 50,   google: 2853 },\n  'Волгоград':         { yandex: 38,   google: 2854 }\n};\n\nconst selectedCity = city || 'Москва';\nconst regions = regionMap[selectedCity];\n\nif (!regions) {\n  throw new Error(`Город \"${selectedCity}\" не найден в карте регионов. Доступные: ${Object.keys(regionMap).join(', ')}`);\n}\n\nreturn [{ json: {\n  project_id,\n  topvisor_project_id: topvisor_project_id || 24810550,\n  city: selectedCity,\n  yandex_region: regions.yandex,\n  google_region: regions.google,\n  is_cron_trigger: !!is_cron_trigger,\n  workflow_version: 'v3.0',\n  started_at: new Date().toISOString()\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [64, 192],
+      "id": "343a9463-48cf-4ba9-bd80-c74bd85fb2b2",
+      "name": "Validate Input + Auth",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://nocodb:8080/api/v1/auth/user/signin",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"email\": \"{{ $env.NOCODB_EMAIL }}\",\n  \"password\": \"{{ $env.NOCODB_PASSWORD }}\"\n}",
+        "options": { "timeout": 10000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [304, 192],
+      "id": "cb425904-f5fe-4202-bbec-094ed859a66b",
+      "name": "NocoDB Auth",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/mrr8j52dx71oi3y",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "where", "value": "=(project_id,eq,{{ $('Validate Input + Auth').first().json.project_id }})" },
+            { "name": "limit", "value": "500" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xc-auth", "value": "={{ $('NocoDB Auth').first().json.token }}" }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [544, 192],
+      "id": "0c6f5056-98aa-4cbf-8e5d-ab3b2c4111e4",
+      "name": "NocoDB Get Clusters",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.topvisor.com/v2/json/get/keywords_2/keywords",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "User-Id", "value": "{{ $env.TOPVISOR_USER_ID }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.TOPVISOR_TOKEN }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"project_id\": {{ $('Validate Input + Auth').first().json.topvisor_project_id }},\n  \"fields\": [\"name\"],\n  \"limit\": 10000\n}",
+        "options": { "timeout": 15000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [544, 420],
+      "id": "get-existing-kw-001",
+      "name": "Topvisor Get Existing Keywords",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/seo_keywords/points/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify(Array(1024).fill(0.01)) }},\n  \"filter\": {\n    \"must\": [\n      { \"key\": \"project_id\", \"match\": { \"value\": \"{{ $('Validate Input + Auth').first().json.project_id }}\" } },\n      { \"key\": \"type\", \"match\": { \"value\": \"competitor_keywords\" } }\n    ]\n  },\n  \"limit\": 5,\n  \"with_payload\": true\n}",
+        "options": { "timeout": 10000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [544, 640],
+      "id": "rag-search-001",
+      "name": "RAG Qdrant Search Competitors",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const nocodb = $('NocoDB Get Clusters').first().json;\nconst validate = $('Validate Input + Auth').first().json;\n\n// ── Existing keywords from Topvisor (для дедупликации) ──\nlet existingKeywords = new Set();\ntry {\n  const existing = $('Topvisor Get Existing Keywords').first().json;\n  const kws = existing.result || existing.list || [];\n  for (const k of kws) {\n    existingKeywords.add((k.name || '').trim().toLowerCase());\n  }\n} catch(e) { /* first run — no existing keywords */ }\n\n// ── RAG контекст от конкурентов ──\nlet ragContext = '';\ntry {\n  const rag = $('RAG Qdrant Search Competitors').first().json;\n  const results = rag.result || [];\n  ragContext = results.map(r => r.payload?.content || '').filter(Boolean).join('\\n');\n} catch(e) { /* no RAG data yet */ }\n\n// ── Парсинг кластеров ──\nconst clusters = nocodb.list || [];\nif (clusters.length === 0) {\n  throw new Error('Кластеры не найдены для project_id: ' + validate.project_id);\n}\n\nconst keywords = [];\nconst newKeywords = [];\nconst duplicates = [];\nconst seen = new Set();\n\nfor (const cluster of clusters) {\n  let kws = [];\n  try {\n    const parsed = JSON.parse(cluster.keywords || '[]');\n    kws = Array.isArray(parsed) ? parsed : [parsed];\n  } catch(e) {\n    kws = [{ keyword: cluster.main_keyword }];\n  }\n\n  for (const kw of kws) {\n    const name = (typeof kw === 'string' ? kw : kw.keyword || '').trim().toLowerCase();\n    if (!name || seen.has(name)) continue;\n    seen.add(name);\n    \n    const entry = {\n      name,\n      url: cluster.recommended_url || '/',\n      cluster_name: cluster.cluster_name,\n      page_type: cluster.page_type || 'commercial',\n      search_volume: kw.volume || cluster.total_volume || 0,\n      intent: cluster.intent || 'commercial'\n    };\n    \n    keywords.push(entry);\n    \n    if (existingKeywords.has(name)) {\n      duplicates.push(name);\n    } else {\n      newKeywords.push(entry);\n    }\n  }\n\n  // main_keyword отдельно\n  const main = (cluster.main_keyword || '').trim().toLowerCase();\n  if (main && !seen.has(main)) {\n    seen.add(main);\n    const entry = {\n      name: main,\n      url: cluster.recommended_url || '/',\n      cluster_name: cluster.cluster_name,\n      page_type: cluster.page_type || 'commercial',\n      search_volume: cluster.total_volume || 0,\n      intent: cluster.intent || 'commercial'\n    };\n    keywords.push(entry);\n    if (existingKeywords.has(main)) {\n      duplicates.push(main);\n    } else {\n      newKeywords.push(entry);\n    }\n  }\n}\n\n// ── Батчинг по 100 ключей ──\nconst BATCH_SIZE = 100;\nconst batches = [];\nfor (let i = 0; i < newKeywords.length; i += BATCH_SIZE) {\n  batches.push(newKeywords.slice(i, i + BATCH_SIZE));\n}\n\nreturn [{ json: {\n  project_id: validate.project_id,\n  topvisor_project_id: validate.topvisor_project_id,\n  city: validate.city,\n  yandex_region: validate.yandex_region,\n  google_region: validate.google_region,\n  all_keywords: keywords,\n  new_keywords: newKeywords,\n  duplicates_skipped: duplicates.length,\n  keywords_total: keywords.length,\n  keywords_new: newKeywords.length,\n  clusters_count: clusters.length,\n  batches,\n  batches_count: batches.length,\n  rag_context: ragContext,\n  existing_in_topvisor: existingKeywords.size\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [784, 192],
+      "id": "6c2c2c14-e005-43ce-a60c-81349e514d5b",
+      "name": "Prepare Keywords + Dedup",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nif (data.keywords_new === 0) {\n  return [{ json: { ...data, add_result: 'skipped_no_new_keywords', added_count: 0 } }];\n}\n\n// Отправляем батчами\nconst results = [];\n\nfor (let i = 0; i < data.batches.length; i++) {\n  const batch = data.batches[i];\n  const names = batch.map(k => k.name);\n  \n  try {\n    const resp = await fetch('https://api.topvisor.com/v2/json/set/keywords_2/add', {\n      method: 'POST',\n      headers: {\n        'Content-Type': 'application/json',\n        'User-Id': $env.TOPVISOR_USER_ID,\n        'Authorization': `Bearer ${$env.TOPVISOR_TOKEN}`\n      },\n      body: JSON.stringify({\n        project_id: data.topvisor_project_id,\n        keywords: names,\n        group_name: `SEO Auto ${data.project_id} ${new Date().toISOString().slice(0,10)}`\n      })\n    });\n    const json = await resp.json();\n    results.push({ batch: i + 1, count: names.length, status: json.result || json.status || 'sent', errors: json.errors || null });\n  } catch(e) {\n    results.push({ batch: i + 1, count: names.length, status: 'error', error: e.message });\n  }\n}\n\nconst successBatches = results.filter(r => r.status !== 'error').length;\nconst totalAdded = results.filter(r => r.status !== 'error').reduce((s, r) => s + r.count, 0);\n\nreturn [{ json: {\n  ...data,\n  add_results: results,\n  added_count: totalAdded,\n  success_batches: successBatches,\n  total_batches: results.length\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1024, 192],
+      "id": "batch-add-001",
+      "name": "Topvisor Add Keywords (Batched)",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.topvisor.com/v2/json/set/projects_2/editSearchers",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" },
+            { "name": "User-Id", "value": "{{ $env.TOPVISOR_USER_ID }}" },
+            { "name": "Authorization", "value": "Bearer {{ $env.TOPVISOR_TOKEN }}" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"project_id\": {{ $('Validate Input + Auth').first().json.topvisor_project_id }},\n  \"searchers\": [\n    {\"searcher_key\": 1, \"enabled\": true, \"regions\": [{\"id\": {{ $('Validate Input + Auth').first().json.yandex_region }}}]},\n    {\"searcher_key\": 2, \"enabled\": true, \"regions\": [{\"id\": {{ $('Validate Input + Auth').first().json.google_region }}}]}\n  ]\n}",
+        "options": { "timeout": 15000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1264, 192],
+      "id": "9b73762c-9d14-49f5-994a-bcf82625b3da",
+      "name": "Topvisor Enable Searchers",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst validate = $('Validate Input + Auth').first().json;\n\n// ── Реальные ML-фичи из данных кластеров ──\nconst keywords = data.all_keywords || [];\nconst avgVolume = keywords.length > 0 \n  ? keywords.reduce((s, k) => s + (k.search_volume || 0), 0) / keywords.length \n  : 0;\n\nconst commercialRatio = keywords.length > 0\n  ? keywords.filter(k => k.intent === 'commercial' || k.page_type === 'commercial').length / keywords.length\n  : 0;\n\nconst clusterNames = [...new Set(keywords.map(k => k.cluster_name).filter(Boolean))];\n\nconst mlPayload = {\n  project_id: validate.project_id,\n  keywords_count: keywords.length,\n  new_keywords_count: data.keywords_new || 0,\n  clusters_count: data.clusters_count || 0,\n  avg_search_volume: Math.round(avgVolume),\n  commercial_ratio: Math.round(commercialRatio * 100) / 100,\n  unique_clusters: clusterNames.length,\n  city: validate.city,\n  has_rag_context: !!(data.rag_context && data.rag_context.length > 0),\n  duplicate_ratio: data.keywords_total > 0 \n    ? Math.round((data.duplicates_skipped / data.keywords_total) * 100) / 100 \n    : 0\n};\n\nreturn [{ json: { ...data, ml_payload: mlPayload } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1264, 448],
+      "id": "ml-features-001",
+      "name": "Prepare ML Features (Real Data)",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ml-service:8000/predict/aeo_score",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.ml_payload) }}",
+        "options": { "timeout": 10000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1504, 448],
+      "id": "ml-aeo-001",
+      "name": "ML AEO Score Predict",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const features = $('Prepare ML Features (Real Data)').first().json;\nlet mlResult = {};\ntry { mlResult = $input.first().json; } catch(e) {}\n\nreturn [{ json: {\n  ...features,\n  ml_aeo_score: mlResult.score ?? null,\n  ml_aeo_label: mlResult.label ?? null,\n  ml_confidence: mlResult.confidence ?? null,\n  ml_model_version: mlResult.model_version ?? 'unknown',\n  ml_is_rule_based: mlResult.is_rule_based ?? true\n}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1744, 448],
+      "id": "ml-merge-001",
+      "name": "Merge ML Result",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const validate = $('Validate Input + Auth').first().json;\nconst prep = $('Prepare Keywords + Dedup').first().json;\nconst ml = $('Merge ML Result').first().json;\n\nlet searchResult = {};\ntry { searchResult = $('Topvisor Enable Searchers').first().json; } catch(e) {}\n\n// ── Гранулярный QC Score (7 критериев) ──\nlet qc = 0;\nconst qcDetails = {};\n\n// 1. Ключи добавлены (0-25)\nconst addedRatio = prep.keywords_new > 0 ? (ml.added_count || 0) / prep.keywords_new : 0;\nqcDetails.keywords_added = Math.round(addedRatio * 25);\nqc += qcDetails.keywords_added;\n\n// 2. Searchers включены (0-20)\nconst searchersOk = searchResult.result === 'success' || searchResult.status === 'success' || (Object.keys(searchResult).length > 0 && !searchResult.error);\nqcDetails.searchers_enabled = searchersOk ? 20 : 0;\nqc += qcDetails.searchers_enabled;\n\n// 3. Дедупликация работает (0-15)\nqcDetails.dedup_applied = prep.existing_in_topvisor > 0 ? 15 : (prep.keywords_new === prep.keywords_total ? 10 : 15);\nqc += qcDetails.dedup_applied;\n\n// 4. Кластеры покрыты (0-15)\nconst clusterCoverage = prep.clusters_count > 0 ? Math.min(1, prep.keywords_total / (prep.clusters_count * 3)) : 0;\nqcDetails.cluster_coverage = Math.round(clusterCoverage * 15);\nqc += qcDetails.cluster_coverage;\n\n// 5. ML предсказание получено (0-10)\nqcDetails.ml_prediction = ml.ml_aeo_score !== null ? 10 : 0;\nqc += qcDetails.ml_prediction;\n\n// 6. RAG контекст использован (0-10)\nqcDetails.rag_context = prep.rag_context && prep.rag_context.length > 50 ? 10 : 0;\nqc += qcDetails.rag_context;\n\n// 7. Оба региона настроены (0-5)\nqcDetails.regions_configured = (validate.yandex_region && validate.google_region) ? 5 : 0;\nqc += qcDetails.regions_configured;\n\nconst response = {\n  status: qc >= 60 ? 'success' : qc >= 30 ? 'partial' : 'failed',\n  project_id: validate.project_id,\n  topvisor_project_id: validate.topvisor_project_id,\n  city: validate.city,\n  keywords_total: prep.keywords_total,\n  keywords_new_added: ml.added_count || 0,\n  keywords_duplicates_skipped: prep.duplicates_skipped,\n  clusters_count: prep.clusters_count,\n  yandex_region: validate.yandex_region,\n  google_region: validate.google_region,\n  qc_score: qc,\n  qc_max: 100,\n  qc_details: qcDetails,\n  ml: {\n    aeo_score: ml.ml_aeo_score,\n    aeo_label: ml.ml_aeo_label,\n    confidence: ml.ml_confidence,\n    model_version: ml.ml_model_version,\n    is_rule_based: ml.ml_is_rule_based\n  },\n  searchers_result: searchResult.result || searchResult,\n  version: 'v3.0',\n  timestamp: new Date().toISOString(),\n  started_at: validate.started_at,\n  duration_ms: new Date() - new Date(validate.started_at)\n};\n\nreturn [{ json: response }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1504, 192],
+      "id": "build-response-001",
+      "name": "Build Response (QC 7 Criteria)",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/topvisor_log",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "xc-auth", "value": "={{ $('NocoDB Auth').first().json.token }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"project_id\": \"{{ $json.project_id }}\",\n  \"action\": \"topvisor_setup\",\n  \"keywords_total\": {{ $json.keywords_total }},\n  \"keywords_added\": {{ $json.keywords_new_added }},\n  \"duplicates_skipped\": {{ $json.keywords_duplicates_skipped }},\n  \"qc_score\": {{ $json.qc_score }},\n  \"ml_aeo_score\": {{ $json.ml?.aeo_score || 'null' }},\n  \"status\": \"{{ $json.status }}\",\n  \"version\": \"v3.0\",\n  \"full_response\": {{ JSON.stringify(JSON.stringify($json)) }},\n  \"created_at\": \"{{ $json.timestamp }}\"\n}",
+        "options": { "timeout": 10000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1744, 192],
+      "id": "nocodb-save-001",
+      "name": "NocoDB Save Result",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"bge-m3\",\n  \"prompt\": \"Topvisor setup project {{ $json.project_id }} city {{ $json.city }} keywords {{ $json.keywords_total }} added {{ $json.keywords_new_added }} qc {{ $json.qc_score }} aeo {{ $json.ml?.aeo_score || 'n/a' }}\"\n}",
+        "options": { "timeout": 15000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1984, 192],
+      "id": "embed-001",
+      "name": "Ollama Embed Result",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/seo_workflow_results/points",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"points\": [{\n    \"id\": {{ Math.floor(Math.random() * 2147483647) }},\n    \"vector\": {{ JSON.stringify($('Ollama Embed Result').first().json.embedding || Array(1024).fill(0)) }},\n    \"payload\": {\n      \"project_id\": \"{{ $('Build Response (QC 7 Criteria)').first().json.project_id }}\",\n      \"workflow\": \"03_topvisor\",\n      \"type\": \"workflow_result\",\n      \"status\": \"{{ $('Build Response (QC 7 Criteria)').first().json.status }}\",\n      \"qc_score\": {{ $('Build Response (QC 7 Criteria)').first().json.qc_score }},\n      \"keywords_added\": {{ $('Build Response (QC 7 Criteria)').first().json.keywords_new_added }},\n      \"timestamp\": \"{{ $('Build Response (QC 7 Criteria)').first().json.timestamp }}\",\n      \"content\": \"Step 03 Topvisor: added {{ $('Build Response (QC 7 Criteria)').first().json.keywords_new_added }} keywords, QC {{ $('Build Response (QC 7 Criteria)').first().json.qc_score }}/100\"\n    }\n  }]\n}",
+        "options": { "timeout": 10000 }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [2224, 192],
+      "id": "qdrant-save-001",
+      "name": "Qdrant Save Result",
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($('Build Response (QC 7 Criteria)').first().json) }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [2464, 192],
+      "id": "ac57727e-89e9-44f7-912b-30ed9fd33555",
+      "name": "Return Result"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          { "node": "Validate Input + Auth", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Cron Weekly Monday 6AM": {
+      "main": [
+        [
+          { "node": "NocoDB Auth (Cron)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "NocoDB Auth (Cron)": {
+      "main": [
+        [
+          { "node": "NocoDB Get Active Projects", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "NocoDB Get Active Projects": {
+      "main": [
+        [
+          { "node": "Split Projects for Iteration", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Split Projects for Iteration": {
+      "main": [
+        [
+          { "node": "Validate Input + Auth", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validate Input + Auth": {
+      "main": [
+        [
+          { "node": "NocoDB Auth", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "NocoDB Auth": {
+      "main": [
+        [
+          { "node": "NocoDB Get Clusters", "type": "main", "index": 0 },
+          { "node": "Topvisor Get Existing Keywords", "type": "main", "index": 0 },
+          { "node": "RAG Qdrant Search Competitors", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "NocoDB Get Clusters": {
+      "main": [
+        [
+          { "node": "Prepare Keywords + Dedup", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Topvisor Get Existing Keywords": {
+      "main": [
+        [
+          { "node": "Prepare Keywords + Dedup", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "RAG Qdrant Search Competitors": {
+      "main": [
+        [
+          { "node": "Prepare Keywords + Dedup", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Prepare Keywords + Dedup": {
+      "main": [
+        [
+          { "node": "Topvisor Add Keywords (Batched)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Topvisor Add Keywords (Batched)": {
+      "main": [
+        [
+          { "node": "Topvisor Enable Searchers", "type": "main", "index": 0 },
+          { "node": "Prepare ML Features (Real Data)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Topvisor Enable Searchers": {
+      "main": [
+        [
+          { "node": "Build Response (QC 7 Criteria)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Prepare ML Features (Real Data)": {
+      "main": [
+        [
+          { "node": "ML AEO Score Predict", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "ML AEO Score Predict": {
+      "main": [
+        [
+          { "node": "Merge ML Result", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Merge ML Result": {
+      "main": [
+        [
+          { "node": "Build Response (QC 7 Criteria)", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Response (QC 7 Criteria)": {
+      "main": [
+        [
+          { "node": "NocoDB Save Result", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "NocoDB Save Result": {
+      "main": [
+        [
+          { "node": "Ollama Embed Result", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Ollama Embed Result": {
+      "main": [
+        [
+          { "node": "Qdrant Save Result", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Qdrant Save Result": {
+      "main": [
+        [
+          { "node": "Return Result", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false,
+    "errorWorkflow": "",
+    "saveManualExecutions": true
+  },
+  "versionId": "v3.0-improved-20260403",
+  "meta": {
+    "instanceId": "e400d94cd35057382ffd98f35f5f609f9bd3f2676425b3672d90c1a1c4917652"
+  },
+  "id": "KLDdfjvPLCTieXLx",
+  "tags": [
+    { "name": "step_03" },
+    { "name": "v3.0_improved" },
+    { "name": "SEO_v3.0" },
+    { "name": "RAG" },
+    { "name": "ML_AEO" }
+  ]
+}
