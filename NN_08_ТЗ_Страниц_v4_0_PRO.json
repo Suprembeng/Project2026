@@ -1,0 +1,672 @@
+{
+  "name": "NN_08_ТЗ_Страниц_v4.0_PRO",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "step08-page-briefs-v4",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "node-webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 460],
+      "webhookId": "step08-v4"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "months", "monthsInterval": 1, "triggerAtDay": 1, "triggerAtHour": 4 }]
+        }
+      },
+      "id": "node-cron",
+      "name": "Cron Monthly Update",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [220, 260]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/projects_config",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "where", "value": "(project_phase,neq,archived)" },
+            { "name": "fields", "value": "project_id,niche,city,niche_cluster,priority_engines,project_phase,cms,domain_age" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "xc-token", "value": "={{ $env.NOCODB_API_KEY }}" }] },
+        "options": { "timeout": 15000 }
+      },
+      "id": "node-load-projects",
+      "name": "Load Active Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [420, 260],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": { "batchSize": 1, "options": {} },
+      "id": "node-split-projects",
+      "name": "SplitInBatches Projects",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [620, 260]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Validate & Sanitize v4.0 ===\n// Добавлено: niche_cluster, priority_engines, project_phase, cms\n\nconst body = $input.first().json.body || $input.first().json;\nconst raw_niche = body.niche || '';\nconst raw_city = body.city || '';\nconst project_id = body.project_id || '';\nconst batch_size = body.batch_size || 3;\n\nif (!raw_niche) throw new Error('Поле \"niche\" обязательно');\nif (!raw_city) throw new Error('Поле \"city\" обязательно');\nif (!project_id) throw new Error('Поле \"project_id\" обязательно');\n\n// Формат project_id: niche_city_NNN\nif (!/^[a-z0-9_]+$/.test(project_id)) throw new Error('project_id: только a-z, 0-9, _ (формат: niche_city_NNN)');\n\n// Sanitize inputs\nconst sanitize = (s) => s.replace(/[\\n\\r\\t`{}\\[\\]<>|;$]/g, '').substring(0, 100).trim();\nconst niche = sanitize(raw_niche);\nconst city = sanitize(raw_city);\n\n// v4.0: Multi-project + niche_cluster\nconst validClusters = ['commercial_local', 'commercial_national', 'ecom', 'saas', 'info'];\nconst niche_cluster = validClusters.includes(body.niche_cluster) ? body.niche_cluster : 'commercial_local';\nconst priority_engines = ['yandex', 'google', 'both'].includes(body.priority_engines) ? body.priority_engines : 'both';\nconst project_phase = ['setup', 'growth', 'maintenance', 'recovery'].includes(body.project_phase) ? body.project_phase : 'setup';\nconst cms = body.cms || 'unknown';\n\nconst embed_query = `${niche} ${city} техническое задание контент страница секции разделы UX CTA SEO AEO E-E-A-T 2026`;\n\nreturn [{ json: {\n  niche, city, project_id,\n  niche_cluster, priority_engines, project_phase, cms,\n  batch_size: Math.min(Math.max(batch_size, 1), 5),\n  embed_query,\n  workflow_version: 'v4.0_pro',\n  started_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node-validate",
+      "name": "Validate & Sanitize v4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [820, 460]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'bge-m3', prompt: $json.embed_query }) }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "node-embedding",
+      "name": "Get Query Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1020, 460],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/seo_personas/points/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vector: $json.embedding, limit: 5, with_payload: true }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "node-rag-personas",
+      "name": "RAG Personas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1260, 260],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/seo_structures/points/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vector: $('Get Query Embedding').first().json.embedding, limit: 5, with_payload: true }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "node-rag-structures",
+      "name": "RAG Structures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1260, 460],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/briefs_history/points/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vector: $('Get Query Embedding').first().json.embedding, limit: 3, with_payload: true }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "node-rag-history",
+      "name": "RAG Briefs History",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1260, 660],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/competitor_insights/points/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vector: $('Get Query Embedding').first().json.embedding, limit: 5, with_payload: true, filter: { must: [{ key: 'niche_cluster', match: { value: $('Validate & Sanitize v4').first().json.niche_cluster } }] } }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "node-rag-competitors",
+      "name": "RAG Competitors",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1260, 860],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/mvd9w6n0m6uaon1",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "where", "value": "={{ '(project_id,eq,' + $('Validate & Sanitize v4').first().json.project_id + ')' }}" },
+            { "name": "limit", "value": "100" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "xc-token", "value": "={{ $env.NOCODB_API_KEY }}" }] },
+        "options": { "timeout": 15000 }
+      },
+      "id": "node-fetch-structures",
+      "name": "Fetch Page Structures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1260, 1060],
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/mrovdz8mmvskhol",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "where", "value": "={{ '(project_id,eq,' + $('Validate & Sanitize v4').first().json.project_id + ')' }}" },
+            { "name": "limit", "value": "500" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "xc-token", "value": "={{ $env.NOCODB_API_KEY }}" }] },
+        "options": { "timeout": 15000 }
+      },
+      "id": "node-fetch-links",
+      "name": "Fetch Internal Links",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1260, 1260],
+      "retryOnFail": true,
+      "maxTries": 3
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/commercial_factors",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "where", "value": "={{ '(project_id,eq,' + $('Validate & Sanitize v4').first().json.project_id + ')' }}" },
+            { "name": "limit", "value": "50" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "xc-token", "value": "={{ $env.NOCODB_API_KEY }}" }] },
+        "options": { "timeout": 15000 }
+      },
+      "id": "node-fetch-kf",
+      "name": "Fetch KF Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1260, 1460],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Merge RAG Context v4.0 ===\n// Добавлено: контекст конкурентов (CI), коммерческие факторы [Я], niche_cluster\n\nconst validate = $('Validate & Sanitize v4').first().json;\nlet personaCtx = '';\ntry {\n  const personas = $('RAG Personas').first().json.result || [];\n  if (personas.length) {\n    personaCtx = '=== ЦЕЛЕВАЯ АУДИТОРИЯ ===\\n';\n    personas.forEach((r, i) => {\n      const p = r.payload || {};\n      personaCtx += `Персона ${i+1}: ${p.persona_name || 'N/A'}`;\n      if (p.pain_points) personaCtx += ` | Боли: ${typeof p.pain_points === 'string' ? p.pain_points : JSON.stringify(p.pain_points).substring(0, 300)}`;\n      if (p.intent_type) personaCtx += ` | Интент: ${p.intent_type}`;\n      if (p.decision_factors) personaCtx += ` | Решающие факторы: ${p.decision_factors}`;\n      personaCtx += '\\n';\n    });\n  }\n} catch(e) {}\n\nlet structCtx = '';\ntry {\n  const structs = $('RAG Structures').first().json.result || [];\n  if (structs.length) {\n    structCtx = '\\n=== ЛУЧШИЕ СТРУКТУРЫ СТРАНИЦ (RAG) ===\\n';\n    structs.forEach((r, i) => {\n      const p = r.payload || {};\n      structCtx += `Пример ${i+1}: ${p.page_type || ''} — ${p.section_count || '?'} секций, ${p.word_count || '?'} слов`;\n      if (p.sections_summary) structCtx += ` | Секции: ${p.sections_summary}`;\n      if (p.schema_types) structCtx += ` | Schema: ${p.schema_types}`;\n      structCtx += '\\n';\n    });\n  }\n} catch(e) {}\n\nlet historyCtx = '';\ntry {\n  const history = $('RAG Briefs History').first().json.result || [];\n  if (history.length) {\n    historyCtx = '\\n=== ПРЕДЫДУЩИЕ ТЗ (контекст) ===\\n';\n    history.forEach((r, i) => {\n      const p = r.payload || {};\n      historyCtx += `ТЗ ${i+1}: ${p.page_slug || ''} — QC: ${p.qc_score || '?'}/100, ${p.sections_count || '?'} секций`;\n      if (p.ml_score) historyCtx += `, ML: ${p.ml_score}`;\n      historyCtx += '\\n';\n    });\n  }\n} catch(e) {}\n\n// v4.0: Competitive Intelligence контекст\nlet competitorCtx = '';\ntry {\n  const competitors = $('RAG Competitors').first().json.result || [];\n  if (competitors.length) {\n    competitorCtx = '\\n=== КОНКУРЕНТЫ (CI) ===\\n';\n    competitors.forEach((r, i) => {\n      const p = r.payload || {};\n      competitorCtx += `Конкурент ${i+1}: ${p.domain || '?'}`;\n      if (p.top_sections) competitorCtx += ` | ТОП-секции: ${p.top_sections}`;\n      if (p.avg_word_count) competitorCtx += ` | Слов: ${p.avg_word_count}`;\n      if (p.schema_types) competitorCtx += ` | Schema: ${p.schema_types}`;\n      if (p.eeat_signals) competitorCtx += ` | E-E-A-T: ${p.eeat_signals}`;\n      competitorCtx += '\\n';\n    });\n  }\n} catch(e) {}\n\n// v4.0: Коммерческие факторы [Я]\nlet kfCtx = '';\ntry {\n  const kfData = $('Fetch KF Data').first().json.list || [];\n  if (kfData.length) {\n    kfCtx = '\\n=== КОММЕРЧЕСКИЕ ФАКТОРЫ [Я] ===\\n';\n    kfData.forEach(kf => {\n      kfCtx += `${kf.factor_name || ''}: ${kf.status || ''} | Приоритет: ${kf.priority || ''}\\n`;\n    });\n  }\n} catch(e) {}\n\nconst fullContext = (personaCtx + structCtx + historyCtx + competitorCtx + kfCtx) || 'Нет RAG-данных.';\n\nreturn [{ json: {\n  rag_context: fullContext,\n  rag_sources: {\n    personas: personaCtx ? 'yes' : 'no',\n    structures: structCtx ? 'yes' : 'no',\n    history: historyCtx ? 'yes' : 'no',\n    competitors: competitorCtx ? 'yes' : 'no',\n    kf: kfCtx ? 'yes' : 'no'\n  }\n}}];"
+      },
+      "id": "node-merge-rag",
+      "name": "Merge RAG Context v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 660],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Parse & Split Batches v4.0 ===\n// Добавлено: приоритизация, cannibalization check, niche_cluster\n\nconst structResponse = $('Fetch Page Structures').first().json;\nconst linksResponse = $('Fetch Internal Links').first().json;\nconst validate = $('Validate & Sanitize v4').first().json;\nconst ragInfo = $('Merge RAG Context v2').first().json;\n\nconst pages = structResponse.list || [];\nif (pages.length === 0) throw new Error('Нет структур страниц для project_id: ' + validate.project_id + '. Сначала запустите Шаг 04.');\n\nconst links = (linksResponse.list || []);\nconst linksMap = {};\nlinks.forEach(l => {\n  const from = l.from_url || '';\n  if (!linksMap[from]) linksMap[from] = [];\n  linksMap[from].push({ to: l.to_url, anchor: l.anchor });\n});\n\n// v4.0: Cannibalization check — выявляем пересечения ключевых слов\nconst keywordMap = {};\nconst cannibalizationWarnings = [];\npages.forEach(p => {\n  const kw = (p.main_keyword || '').toLowerCase().trim();\n  if (kw) {\n    if (keywordMap[kw]) {\n      cannibalizationWarnings.push(`⚠ Каннибализация: \"${kw}\" используется на ${keywordMap[kw]} И ${p.recommended_url}`);\n    }\n    keywordMap[kw] = p.recommended_url;\n  }\n});\n\nif (cannibalizationWarnings.length > 0) {\n  console.log('[Step08 v4.0] CANNIBALIZATION DETECTED:', cannibalizationWarnings.join('; '));\n}\n\n// v4.0: Приоритизация — high priority страницы первые\nconst priorityOrder = { high: 0, medium: 1, low: 2 };\nconst sortedPages = [...pages].sort((a, b) => {\n  const pa = priorityOrder[a.implementation_priority || 'medium'] ?? 1;\n  const pb = priorityOrder[b.implementation_priority || 'medium'] ?? 1;\n  return pa - pb;\n});\n\nconst BATCH_SIZE = validate.batch_size || 3;\nconst batches = [];\nfor (let i = 0; i < sortedPages.length; i += BATCH_SIZE) {\n  const batch = sortedPages.slice(i, i + BATCH_SIZE);\n  const batchSummary = batch.map((p, j) => {\n    const pageLinks = linksMap[p.recommended_url] || [];\n    let blocks = [];\n    try { blocks = typeof p.blocks === 'string' ? JSON.parse(p.blocks) : (p.blocks || []); } catch(e) {}\n    return `${i+j+1}. [${(p.page_type||'commercial').toUpperCase()}] ${p.cluster_name||''}\n   URL: ${p.recommended_url||''}\n   Ключ: ${p.main_keyword||''}\n   H1: ${p.h1_template||''}\n   Title: ${p.title_template||''}\n   Description: ${p.description_template||''}\n   Блоков: ${blocks.length}, Слов: ${p.total_word_count||0}\n   Блоки: ${blocks.map(b => b.block_name).join(', ')}\n   Ссылки: ${pageLinks.length > 0 ? pageLinks.map(l => l.anchor + ' → ' + l.to).join('; ') : 'нет'}`;\n  }).join('\\n\\n');\n\n  batches.push({\n    batch_index: Math.floor(i / BATCH_SIZE) + 1,\n    total_batches: Math.ceil(sortedPages.length / BATCH_SIZE),\n    batch_pages: batch,\n    pages_summary: batchSummary,\n    batch_size: batch.length,\n    niche: validate.niche,\n    city: validate.city,\n    project_id: validate.project_id,\n    niche_cluster: validate.niche_cluster,\n    priority_engines: validate.priority_engines,\n    project_phase: validate.project_phase,\n    total_pages: sortedPages.length,\n    rag_context: ragInfo.rag_context,\n    cannibalization_warnings: cannibalizationWarnings\n  });\n}\n\nreturn batches.map(b => ({ json: b }));"
+      },
+      "id": "node-parse-split",
+      "name": "Parse & Split Batches v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1800, 660]
+    },
+    {
+      "parameters": { "batchSize": 1, "options": {} },
+      "id": "node-loop",
+      "name": "Loop Batches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [2020, 660]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Build Dynamic Prompt v4.0 ===\n// Content Protocol v2.0 · [Я]/[G]/[ОБА] · AEO/GEO · niche_cluster адаптация\n\nconst batch = $input.first().json;\n\n// v4.0: Niche Cluster специфика\nconst clusterInstructions = {\n  commercial_local: `СПЕЦИФИКА КЛАСТЕРА [commercial_local]:\n- [Я] Обязательно: КФ-секции (цены, гарантии, сертификаты, команда, отзывы, портфолио)\n- [Я] Геолокация: район, метро, адрес в H1/Title/секциях\n- [Я] Бизнес-профили: 2GIS, Яндекс.Бизнес — NAP consistency\n- [G] LocalBusiness Schema + Service Schema\n- [ОБА] FAQ минимум 7 вопросов с геоспецификой`,\n\n  commercial_national: `СПЕЦИФИКА КЛАСТЕРА [commercial_national]:\n- [G] E-E-A-T усиленный: автор, экспертиза, доказательная база\n- [G] Backlink-friendly: цитируемые факты, исследования, статистика\n- [Я] Конкурентная семантика: LSI покрытие ≥30%\n- [ОБА] Featured Snippets / PAA оптимизация в каждой секции\n- [ОБА] Programmatic ready: шаблонизация контента`,\n\n  ecom: `СПЕЦИФИКА КЛАСТЕРА [ecom]:\n- [G] Product Schema + AggregateRating\n- [ОБА] Фильтры и категории: уникальные описания, не дубли\n- [Я] КФ усиленные: доставка, оплата, возврат, гарантия\n- [G] CWV-critical: LCP ≤ 2.5s → минимум тяжёлых элементов\n- [ОБА] Breadcrumbs Schema обязательно`,\n\n  saas: `СПЕЦИФИКА КЛАСТЕРА [saas]:\n- [G] GEO-оптимизация: AI Overviews, цитируемость\n- [G] Entity SEO: Knowledge Graph оптимизация\n- [ОБА] AEO-first: каждая секция отвечает на конкретный вопрос\n- [ОБА] Международное SEO: hreflang-ready\n- [G] SoftwareApplication Schema`,\n\n  info: `СПЕЦИФИКА КЛАСТЕРА [info]:\n- [G] E-E-A-T критичен: авторство, даты, источники, обновления\n- [G] HCU compliance: уникальный опыт, не AI-generic\n- [ОБА] Content Decay prevention: evergreen + update signals\n- [Я] Тематический индекс: глубина раскрытия темы\n- [ОБА] FAQ + How-To Schema`\n};\n\n// v4.0: Engine-specific инструкции\nconst engineInstructions = {\n  yandex: `ФОКУС: ЯНДЕКС [Я]\n- КФ (коммерческие факторы) — ПРИОРИТЕТ: цены, гарантии, сертификаты, контакты, команда\n- ПФ (поведенческие факторы): CTR title, dwell time → глубокий контент, CTA\n- ИКС: качество сайта, доверие, полнота информации\n- Региональность: город в Title/H1/секциях\n- Алиса/Voice Search: Speakable-разметка, прямые ответы`,\n\n  google: `ФОКУС: GOOGLE [G]\n- E-E-A-T: Experience (реальный опыт), Expertise, Authoritativeness, Trustworthiness\n- CWV: LCP, CLS, INP — структура не должна замедлять загрузку\n- HCU: Helpful Content — уникальный опыт, не AI-generic\n- SGE/AI Overviews: GEO-оптимизация, цитируемые факты\n- Schema.org: FAQPage, Service, LocalBusiness, Speakable`,\n\n  both: `ДВОЙНОЙ ФОКУС: [Я] ЯНДЕКС + [G] GOOGLE\n- [Я] КФ: цены, гарантии, сертификаты, контакты → отдельные секции\n- [Я] ПФ: глубокий контент + CTA + навигация\n- [G] E-E-A-T: экспертиза + доказательная база + авторство\n- [G] CWV: структура не замедляет загрузку\n- [ОБА] AEO: FAQ + прямые ответы + Speakable\n- [ОБА] Schema: FAQPage + Service + LocalBusiness\n- МАРКИРУЙ каждую рекомендацию: [Я], [G] или [ОБА]`\n};\n\nconst clusterCtx = clusterInstructions[batch.niche_cluster] || clusterInstructions.commercial_local;\nconst engineCtx = engineInstructions[batch.priority_engines] || engineInstructions.both;\n\nconst systemPrompt = `Ты PENTA-ROLE EXPERT (v4.0): Senior SEO Strategist + Automation Engineer + MLOps + CI Analyst + CRO Analyst.\nГод: 2026.\n\nЗАДАЧА: создай детальное ТЗ для каждой страницы по Content Protocol v2.0.\n\n${batch.rag_context}\n\n${clusterCtx}\n\n${engineCtx}\n\n=== CONTENT PROTOCOL v2.0 (5 СЛОЁВ) ===\n\nСлой 1 — РЕЛЕВАНТНОСТЬ:\n- Покрытие ключевых сущностей ≥80%\n- LSI-слова в каждой секции\n- BM25-оптимальная плотность\n\nСлой 2 — ЧИТАЕМОСТЬ:\n- Адаптация под intent пользователя\n- Короткие абзацы (3-4 предложения)\n- Подзаголовки каждые 200-300 слов\n\nСлой 3 — E-E-A-T КОНТЕНТ:\n- Факты с источниками\n- Авторство и экспертиза\n- Даты и обновления\n- Цитируемые данные и статистика\n\nСлой 4 — AEO/GEO ГОТОВНОСТЬ:\n- FAQ-структура (≥5 вопросов, AEO-формат: прямой ответ первым предложением)\n- Cite-friendly факты (GEO: генеративные движки могут процитировать)\n- Speakable-секции (voice search ready)\n- Schema FAQPage обязательна\n\nСлой 5 — AI HUMANIZATION:\n- НЕ generic AI-текст\n- Конкретика ниши: реальные примеры, цифры, местная специфика\n- UGC-стиль: как будто написано экспертом-практиком\n- Уникальные инсайты, не общие фразы\n\n=== ФОРМАТ ТЗ ===\n\n1. МЕТАДАННЫЕ:\n   - h1: основной заголовок (уникальный, с ключом)\n   - meta_title: ≤60 символов, с ключом и городом\n   - meta_description: ≤160 символов, с УТП и CTA\n   - schema_types: массив Schema.org типов для страницы\n\n2. SECTIONS (sections_json): массив из ≥10 секций, каждая:\n   - section_name: название\n   - section_type: hero | benefits | services | pricing | team | reviews | faq | cta | content | gallery | map | comparison | process | cases | stats | trust | speakable\n   - h2: подзаголовок (уникальный, с LSI-ключом)\n   - content_brief: что писать (5-7 предложений, с конкретикой ниши)\n   - word_count: объём слов секции\n   - keywords: массив ключей для секции\n   - cta_text: текст CTA (если применимо)\n   - eeat_signals: какие E-E-A-T сигналы включить\n   - aeo_question: вопрос для AEO (если FAQ/content секция)\n   - engine_tag: \"Я\" | \"G\" | \"ОБА\" — для какого поисковика секция\n\n3. МЕТА-ПОЛЯ:\n   - cta_blocks: количество CTA (≥3)\n   - word_count_target: общий объём (≥2000 для commercial)\n   - implementation_priority: high/medium/low\n   - top3_quick_wins: 3 быстрых улучшения\n   - content_quality_notes: рекомендации по 5 слоям\n   - schema_types: [\"FAQPage\", \"Service\", \"LocalBusiness\", ...]\n   - aeo_readiness: оценка AEO-готовности 1-10\n\nТИПЫ СТРАНИЦ:\n- commercial: услуги, цены, запись — КФ-секции обязательны [Я]\n- informational: статьи, гайды — E-E-A-T максимум [G]\n- navigation: о компании, команда — Trust + Authority [ОБА]\n- landing: акции, спецпредложения — CTA + FOMO [ОБА]\n\nОтветь СТРОГО JSON (без markdown, без комментариев):\n{\"page_briefs\":[{\"page_slug\":\"/url/\",\"page_type\":\"commercial\",\"h1\":\"...\",\"meta_title\":\"≤60\",\"meta_description\":\"≤160\",\"schema_types\":[\"FAQPage\",\"Service\"],\"sections_json\":[{\"section_name\":\"...\",\"section_type\":\"hero\",\"h2\":\"...\",\"content_brief\":\"...\",\"word_count\":200,\"keywords\":[\"...\"],\"cta_text\":\"...\",\"eeat_signals\":\"...\",\"aeo_question\":\"\",\"engine_tag\":\"ОБА\"}],\"cta_blocks\":4,\"word_count_target\":2500,\"implementation_priority\":\"high\",\"top3_quick_wins\":[\"...\"],\"content_quality_notes\":\"...\",\"aeo_readiness\":7}]}`;\n\nconst userPrompt = `Батч ${batch.batch_index}/${batch.total_batches}.\nНИША: ${batch.niche} | ГОРОД: ${batch.city}\nКЛАСТЕР: ${batch.niche_cluster} | ДВИЖКИ: ${batch.priority_engines} | ФАЗА: ${batch.project_phase}\n${batch.cannibalization_warnings?.length ? '\\n⚠ КАННИБАЛИЗАЦИЯ: ' + batch.cannibalization_warnings.join('; ') + '\\nУчти это при генерации — разведи семантику!\\n' : ''}\nСТРАНИЦЫ (${batch.batch_size} шт.):\n${batch.pages_summary}\n\nДля каждой страницы создай детальное ТЗ по Content Protocol v2.0. Минимум 10 секций. Маркируй [Я]/[G]/[ОБА]. Ответь СТРОГО JSON.`;\n\nconst payload = {\n  model: 'llama-3.3-70b-versatile',\n  max_tokens: 12000,\n  temperature: 0.25,\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: systemPrompt },\n    { role: 'user', content: userPrompt }\n  ]\n};\n\nreturn [{ json: {\n  groq_payload: payload,\n  batch_index: batch.batch_index,\n  total_batches: batch.total_batches,\n  batch_size: batch.batch_size,\n  project_id: batch.project_id,\n  niche: batch.niche,\n  city: batch.city,\n  niche_cluster: batch.niche_cluster,\n  priority_engines: batch.priority_engines,\n  batch_pages: batch.batch_pages\n}}];"
+      },
+      "id": "node-build-prompt",
+      "name": "Build Dynamic Prompt v4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2260, 660]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.groq_payload) }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "Bearer {{ $env.GROQ_API_KEY }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "options": { "timeout": 120000 }
+      },
+      "id": "node-groq",
+      "name": "Groq Page Briefs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2500, 660],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "fallback-check",
+              "leftValue": "={{ $json.error ? 'error' : ($json.choices ? 'ok' : 'error') }}",
+              "rightValue": "error",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-groq-check",
+      "name": "Groq Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [2720, 660]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/chat",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'llama3.1:8b', messages: $('Build Dynamic Prompt v4').first().json.groq_payload.messages, format: 'json', stream: false, options: { temperature: 0.25, num_predict: 8192 } }) }}",
+        "options": { "timeout": 300000 }
+      },
+      "id": "node-fallback",
+      "name": "Fallback Ollama",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2960, 520],
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Parse & Validate Briefs v4.0 ===\n// Добавлено: qc_score расчёт, schema_types, aeo_readiness, engine_tag\n\nconst batchInfo = $('Build Dynamic Prompt v4').first().json;\nlet rawContent = '';\nlet tokensUsed = 0;\nlet llm_source = 'groq';\n\ntry {\n  const groqResp = $('Groq Page Briefs').first().json;\n  if (!groqResp.error && groqResp.choices) {\n    rawContent = groqResp.choices[0]?.message?.content || '';\n    tokensUsed = groqResp.usage?.total_tokens || 0;\n  }\n} catch(e) {}\n\nif (!rawContent) {\n  try {\n    const ollamaResp = $('Fallback Ollama').first().json;\n    rawContent = ollamaResp.message?.content || '';\n    llm_source = 'ollama_fallback';\n  } catch(e) {}\n}\n\nif (!rawContent) {\n  return [{ json: { batch_index: batchInfo.batch_index, briefs_count: 0, nocodb_payload: [], error: 'Both Groq and Ollama failed', groq_tokens: 0, total_batches: batchInfo.total_batches, llm_source: 'none' }}];\n}\n\nlet cleanJson = rawContent.replace(/```json\\s*/gi, '').replace(/```\\s*/gi, '').trim();\nlet parsed;\ntry {\n  parsed = JSON.parse(cleanJson);\n} catch(err) {\n  try { const m = cleanJson.match(/\\{[\\s\\S]+\\}/); if(m) parsed = JSON.parse(m[0]); } catch(e) {}\n  if (!parsed) {\n    return [{ json: { batch_index: batchInfo.batch_index, briefs_count: 0, nocodb_payload: [], error: 'Invalid JSON: ' + cleanJson.substring(0,200), groq_tokens: tokensUsed, total_batches: batchInfo.total_batches, llm_source }}];\n  }\n}\n\nif (Array.isArray(parsed)) parsed = { page_briefs: parsed };\nelse if (parsed && !parsed.page_briefs && parsed.page_slug) parsed = { page_briefs: [parsed] };\n\nconst validPageTypes = ['commercial', 'informational', 'navigation', 'landing'];\nconst briefs = (parsed.page_briefs || []).map((b, idx) => {\n  const sections = Array.isArray(b.sections_json) ? b.sections_json : [];\n  const sectionTypes = sections.map(s => s.section_type || '');\n\n  // v4.0: Content Quality Score (0-100)\n  let qc_score = 0;\n  // Слой 1: Релевантность (макс 20)\n  const keywordCoverage = sections.reduce((s, sec) => s + (sec.keywords?.length || 0), 0);\n  qc_score += Math.min(keywordCoverage * 2, 20);\n  // Слой 2: Читаемость (макс 20)\n  const avgWords = sections.reduce((s, sec) => s + (sec.word_count || 0), 0) / Math.max(sections.length, 1);\n  if (avgWords >= 100 && avgWords <= 400) qc_score += 20;\n  else if (avgWords >= 50) qc_score += 10;\n  // Слой 3: E-E-A-T (макс 20)\n  const eeatCount = sections.filter(s => s.eeat_signals && s.eeat_signals.length > 0).length;\n  qc_score += Math.min(Math.round(eeatCount / Math.max(sections.length, 1) * 20), 20);\n  // Слой 4: AEO/GEO (макс 20)\n  const aeoCount = sections.filter(s => s.aeo_question).length;\n  const hasFAQ = sectionTypes.includes('faq');\n  qc_score += hasFAQ ? 10 : 0;\n  qc_score += Math.min(aeoCount * 2, 10);\n  // Слой 5: Humanization (макс 20)\n  const totalWords = b.word_count_target || sections.reduce((s, sec) => s + (sec.word_count || 0), 0);\n  if (totalWords >= 2000) qc_score += 10;\n  if (sections.length >= 10) qc_score += 10;\n\n  return {\n    project_id: batchInfo.project_id,\n    niche: batchInfo.niche,\n    city: batchInfo.city,\n    niche_cluster: batchInfo.niche_cluster,\n    priority_engines: batchInfo.priority_engines,\n    page_slug: b.page_slug || '',\n    page_type: validPageTypes.includes(b.page_type) ? b.page_type : 'commercial',\n    h1: b.h1 || '',\n    meta_title: (b.meta_title || '').substring(0, 60),\n    meta_description: (b.meta_description || '').substring(0, 160),\n    schema_types: JSON.stringify(b.schema_types || ['FAQPage']),\n    sections_json: JSON.stringify(sections),\n    sections_count: sections.length,\n    cta_blocks: b.cta_blocks || sections.filter(s => s.cta_text).length || 0,\n    word_count_target: totalWords,\n    implementation_priority: b.implementation_priority || 'medium',\n    top3_quick_wins: JSON.stringify(b.top3_quick_wins || []),\n    content_quality_notes: b.content_quality_notes || '',\n    aeo_readiness: b.aeo_readiness || 0,\n    has_hero: sectionTypes.includes('hero'),\n    has_faq: sectionTypes.includes('faq'),\n    has_reviews: sectionTypes.includes('reviews'),\n    has_pricing: sectionTypes.includes('pricing'),\n    has_cta: sectionTypes.includes('cta'),\n    has_speakable: sectionTypes.includes('speakable'),\n    has_eeat_signals: eeatCount > 0,\n    status: 'ready',\n    qc_score,\n    llm_source,\n    version: 'v4.0_pro',\n    created_at: new Date().toISOString()\n  };\n});\n\nreturn [{ json: {\n  batch_index: batchInfo.batch_index,\n  total_batches: batchInfo.total_batches,\n  briefs_count: briefs.length,\n  nocodb_payload: briefs,\n  groq_tokens: tokensUsed,\n  llm_source,\n  error: null\n}}];"
+      },
+      "id": "node-parse-validate",
+      "name": "Parse & Validate Briefs v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3200, 660]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Quality Gate v2 — Content Quality Stack 5 слоёв ===\n\nconst d = $input.first().json;\nif (d.briefs_count === 0 || d.error) {\n  return [{ json: { ...d, qc_passed: false, qc_reason: d.error || 'No briefs generated' }}];\n}\n\nconst issues = [];\nconst layerScores = { relevance: 0, readability: 0, eeat: 0, aeo: 0, humanization: 0 };\nlet totalQC = 0;\n\nd.nocodb_payload.forEach((brief, idx) => {\n  const sections = JSON.parse(brief.sections_json || '[]');\n  const slug = brief.page_slug;\n\n  // КРИТИЧЕСКИЕ ПРОВЕРКИ\n  if (sections.length < 8) issues.push(`[КРИТИЧНО] ${slug}: ${sections.length} секций (мин. 8)`);\n  if (brief.word_count_target < 1500) issues.push(`[КРИТИЧНО] ${slug}: ${brief.word_count_target} слов (мин. 1500)`);\n  if (!brief.h1) issues.push(`[КРИТИЧНО] ${slug}: отсутствует h1`);\n  if (!brief.meta_title) issues.push(`[КРИТИЧНО] ${slug}: отсутствует meta_title`);\n  if (brief.meta_title && brief.meta_title.length > 60) issues.push(`[ВЫСОКИЙ] ${slug}: meta_title ${brief.meta_title.length} символов (макс. 60)`);\n  if (brief.meta_description && brief.meta_description.length > 160) issues.push(`[ВЫСОКИЙ] ${slug}: meta_description ${brief.meta_description.length} символов (макс. 160)`);\n\n  // Слой 1: Релевантность\n  const totalKeywords = sections.reduce((s, sec) => s + (sec.keywords?.length || 0), 0);\n  if (totalKeywords < 10) issues.push(`[СРЕДНИЙ] ${slug}: мало ключей (${totalKeywords}, мин. 10)`);\n\n  // Слой 2: Читаемость\n  const sectionsWithH2 = sections.filter(s => s.h2).length;\n  if (sectionsWithH2 < sections.length * 0.8) issues.push(`[СРЕДНИЙ] ${slug}: ${sectionsWithH2}/${sections.length} секций с H2`);\n\n  // Слой 3: E-E-A-T\n  const eeatSections = sections.filter(s => s.eeat_signals && s.eeat_signals.length > 0).length;\n  if (eeatSections < 3) issues.push(`[ВЫСОКИЙ] ${slug}: мало E-E-A-T сигналов (${eeatSections} секций)`);\n\n  // Слой 4: AEO/GEO\n  if (!brief.has_faq) issues.push(`[ВЫСОКИЙ] ${slug}: нет FAQ секции (AEO обязательно)`);\n  const aeoQuestions = sections.filter(s => s.aeo_question).length;\n  if (aeoQuestions < 3) issues.push(`[СРЕДНИЙ] ${slug}: мало AEO-вопросов (${aeoQuestions}, мин. 3)`);\n\n  // Слой 5: Humanization\n  if (brief.cta_blocks < 2) issues.push(`[СРЕДНИЙ] ${slug}: мало CTA (${brief.cta_blocks}, мин. 2)`);\n\n  totalQC += brief.qc_score;\n});\n\nconst avgQC = Math.round(totalQC / Math.max(d.briefs_count, 1));\nconst criticalIssues = issues.filter(i => i.includes('[КРИТИЧНО]'));\nconst qc_passed = criticalIssues.length === 0 && avgQC >= 40;\n\nreturn [{ json: {\n  ...d,\n  qc_passed,\n  qc_issues: issues,\n  qc_critical_count: criticalIssues.length,\n  qc_avg_score: avgQC,\n  qc_stats: {\n    avg_sections: Math.round(d.nocodb_payload.reduce((s, b) => s + JSON.parse(b.sections_json || '[]').length, 0) / d.briefs_count * 10) / 10,\n    avg_words: Math.round(d.nocodb_payload.reduce((s, b) => s + b.word_count_target, 0) / d.briefs_count),\n    avg_qc_score: avgQC\n  }\n}}];"
+      },
+      "id": "node-quality-gate",
+      "name": "Quality Gate v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3440, 660]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+          "conditions": [
+            {
+              "id": "qc-router",
+              "leftValue": "={{ $json.qc_passed }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "node-qc-router",
+      "name": "QC Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.1,
+      "position": [3660, 660]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "http://nocodb:8080/api/v1/db/data/bulk/noco/ppxzhw4b32456e0/mwd3au8e0j3vrxo",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ where: '(project_id,eq,' + $json.nocodb_payload[0]?.project_id + ')~and(page_slug,in,' + $json.nocodb_payload.map(b => b.page_slug).join(',') + ')' }) }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "xc-token", "value": "={{ $env.NOCODB_API_KEY }}" }] },
+        "options": { "timeout": 15000 }
+      },
+      "id": "node-delete-old",
+      "name": "Delete Old Briefs (filtered)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3900, 520],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://nocodb:8080/api/v1/db/data/bulk/noco/ppxzhw4b32456e0/mwd3au8e0j3vrxo",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Quality Gate v2').first().json.nocodb_payload) }}",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "xc-token", "value": "={{ $env.NOCODB_API_KEY }}" }] },
+        "options": { "timeout": 30000 }
+      },
+      "id": "node-save",
+      "name": "NocoDB Bulk Save",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4120, 520],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Extract ML Features v4.0 ===\n// Добавлено: aeo_ready, schema_count, engine_tags, kf_sections\n\nconst d = $('Quality Gate v2').first().json;\nconst features = d.nocodb_payload.map(brief => {\n  const sections = JSON.parse(brief.sections_json || '[]');\n  const sectionTypes = sections.map(s => s.section_type || '');\n  const engineTags = sections.map(s => s.engine_tag || 'ОБА');\n  const schemaTypes = JSON.parse(brief.schema_types || '[]');\n\n  return {\n    page_slug: brief.page_slug,\n    page_type: brief.page_type,\n    niche_cluster: brief.niche_cluster,\n    section_count: sections.length,\n    has_hero: sectionTypes.includes('hero') ? 1 : 0,\n    has_faq: sectionTypes.includes('faq') ? 1 : 0,\n    has_reviews: sectionTypes.includes('reviews') ? 1 : 0,\n    has_pricing: sectionTypes.includes('pricing') ? 1 : 0,\n    has_cta: sectionTypes.includes('cta') ? 1 : 0,\n    has_comparison: sectionTypes.includes('comparison') ? 1 : 0,\n    has_cases: sectionTypes.includes('cases') ? 1 : 0,\n    has_trust: sectionTypes.includes('trust') ? 1 : 0,\n    has_speakable: sectionTypes.includes('speakable') ? 1 : 0,\n    has_eeat: brief.has_eeat_signals ? 1 : 0,\n    word_count: brief.word_count_target,\n    cta_count: brief.cta_blocks,\n    h2_count: sections.filter(s => s.h2).length,\n    avg_section_words: Math.round(brief.word_count_target / Math.max(sections.length, 1)),\n    keyword_density: sections.reduce((s, sec) => s + (sec.keywords?.length || 0), 0),\n    aeo_questions: sections.filter(s => s.aeo_question).length,\n    schema_count: schemaTypes.length,\n    ya_sections: engineTags.filter(t => t === 'Я').length,\n    g_sections: engineTags.filter(t => t === 'G').length,\n    both_sections: engineTags.filter(t => t === 'ОБА').length,\n    qc_score: brief.qc_score\n  };\n});\n\nreturn [{ json: { ...d, ml_features: features }}];"
+      },
+      "id": "node-extract-ml",
+      "name": "Extract ML Features v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4340, 520]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ml-service:8000/predict/page_structure_rank",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ features: $json.ml_features }) }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "node-ml-structure",
+      "name": "ML Structure Rank",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4560, 400],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ml-service:8000/predict/content_quality",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ features: $('Extract ML Features v2').first().json.ml_features }) }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "node-ml-content",
+      "name": "ML Content Quality",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4560, 640],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput",
+      "retryOnFail": true,
+      "maxTries": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Update ML Scores in NocoDB ===\nconst qcData = $('Quality Gate v2').first().json;\nlet structScore = null, contentScore = null;\n\ntry { structScore = $('ML Structure Rank').first().json.score || null; } catch(e) {}\ntry { contentScore = $('ML Content Quality').first().json.score || null; } catch(e) {}\n\nif (!structScore && !contentScore) {\n  return [{ json: { ...qcData, ml_structure_score: null, ml_content_score: null, ml_updated: false }}];\n}\n\n// Обновляем каждую запись в NocoDB с ML-скорами\nconst updates = qcData.nocodb_payload.map((brief, idx) => ({\n  page_slug: brief.page_slug,\n  project_id: brief.project_id,\n  ml_structure_score: structScore,\n  ml_content_score: contentScore\n}));\n\nreturn [{ json: {\n  ...qcData,\n  ml_structure_score: structScore,\n  ml_content_score: contentScore,\n  ml_updates: updates,\n  ml_updated: true\n}}];"
+      },
+      "id": "node-update-ml",
+      "name": "Merge ML Scores",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4780, 520]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'bge-m3', prompt: $json.nocodb_payload.map(b => b.page_slug + ' ' + b.h1 + ' ' + b.meta_title).join(' | ') }) }}",
+        "options": { "timeout": 30000 }
+      },
+      "id": "node-embed-brief",
+      "name": "Embed Brief",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5000, 520],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/briefs_history/points",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: $('Merge ML Scores').first().json.nocodb_payload.map((b, i) => ({ id: Date.now() + i, vector: $json.embedding || [], payload: { page_slug: b.page_slug, page_type: b.page_type, project_id: b.project_id, niche_cluster: b.niche_cluster, sections_count: b.sections_count, qc_score: b.qc_score, ml_structure_score: $('Merge ML Scores').first().json.ml_structure_score, word_count: b.word_count_target, version: 'v4.0_pro', created_at: b.created_at } })) }) }}",
+        "options": { "timeout": 15000 }
+      },
+      "id": "node-qdrant-save",
+      "name": "Qdrant Save Brief",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5220, 520],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Log Success v4.0 ===\nconst batch = $('Quality Gate v2').first().json;\nconst mlData = $('Merge ML Scores').first().json;\n\nconsole.log(`[Step08 v4.0] ✓ Batch ${batch.batch_index}/${batch.total_batches}: ${batch.briefs_count} briefs | QC: PASS (${batch.qc_avg_score}/100) | ML Structure: ${mlData.ml_structure_score ?? 'N/A'} | ML Content: ${mlData.ml_content_score ?? 'N/A'} | LLM: ${batch.llm_source} | Tokens: ${batch.groq_tokens}`);\n\nreturn [{ json: {\n  batch_index: batch.batch_index,\n  total_batches: batch.total_batches,\n  briefs_count: batch.briefs_count,\n  qc_passed: true,\n  qc_avg_score: batch.qc_avg_score,\n  ml_structure_score: mlData.ml_structure_score,\n  ml_content_score: mlData.ml_content_score,\n  llm_source: batch.llm_source\n}}];"
+      },
+      "id": "node-log-success",
+      "name": "Log Success",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5440, 520]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL || 'http://localhost:5678/webhook/alerts' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: 'NN_08_v4.0', event: 'qc_failure', batch_index: $json.batch_index, total_batches: $json.total_batches, qc_avg_score: $json.qc_avg_score, qc_critical_count: $json.qc_critical_count, qc_issues: $json.qc_issues, llm_source: $json.llm_source, timestamp: new Date().toISOString() }) }}",
+        "options": { "timeout": 10000 }
+      },
+      "id": "node-alert",
+      "name": "Alert QC Failure",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3900, 860],
+      "continueOnFail": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Log QC Failure ===\nconst batch = $('Quality Gate v2').first().json;\n\nconsole.warn(`[Step08 v4.0] ✗ Batch ${batch.batch_index}/${batch.total_batches}: QC FAIL (${batch.qc_avg_score}/100) | Critical: ${batch.qc_critical_count} | Issues: ${batch.qc_issues?.length || 0} | LLM: ${batch.llm_source}`);\nif (batch.qc_issues?.length > 0) console.warn('  Issues: ' + batch.qc_issues.join('; '));\n\nreturn [{ json: {\n  batch_index: batch.batch_index,\n  total_batches: batch.total_batches,\n  briefs_count: batch.briefs_count,\n  qc_passed: false,\n  qc_avg_score: batch.qc_avg_score,\n  qc_issues: batch.qc_issues,\n  llm_source: batch.llm_source\n}}];"
+      },
+      "id": "node-log-failure",
+      "name": "Log QC Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4120, 860]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://nocodb:8080/api/v1/db/data/noco/ppxzhw4b32456e0/mwd3au8e0j3vrxo",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "where", "value": "={{ '(project_id,eq,' + $('Validate & Sanitize v4').first().json.project_id + ')' }}" },
+            { "name": "limit", "value": "100" },
+            { "name": "sort", "value": "-created_at" }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [{ "name": "xc-token", "value": "={{ $env.NOCODB_API_KEY }}" }] },
+        "options": { "timeout": 15000 }
+      },
+      "id": "node-fetch-results",
+      "name": "Fetch All Results",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [5700, 660]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Build Response v4.0 ===\n// Добавлено: attribution baseline, ML агрегация, Content Quality Stack summary\n\nconst response = $input.first().json;\nconst validate = $('Validate & Sanitize v4').first().json;\nconst ragInfo = $('Merge RAG Context v2').first().json;\nconst rows = response.list || [];\n\nconst totalWords = rows.reduce((s,r) => s + (r.word_count_target||0), 0);\nconst totalCTA = rows.reduce((s,r) => s + (r.cta_blocks||0), 0);\nlet totalSections = 0;\nlet totalQC = 0;\nconst priorityCounts = { high: 0, medium: 0, low: 0 };\nconst schemaAll = new Set();\n\nrows.forEach(r => {\n  try {\n    const sec = typeof r.sections_json === 'string' ? JSON.parse(r.sections_json) : (r.sections_json || []);\n    totalSections += sec.length;\n  } catch(e) {}\n  priorityCounts[r.implementation_priority || 'medium']++;\n  totalQC += (r.qc_score || 0);\n  try {\n    const schemas = JSON.parse(r.schema_types || '[]');\n    schemas.forEach(s => schemaAll.add(s));\n  } catch(e) {}\n});\n\nconst avgQC = Math.round(totalQC / Math.max(rows.length, 1));\n\nreturn [{ json: {\n  status: 'success',\n  step: '08_page_briefs',\n  version: 'v4.0_pro',\n  project_id: validate.project_id,\n  niche: validate.niche,\n  city: validate.city,\n  niche_cluster: validate.niche_cluster,\n  priority_engines: validate.priority_engines,\n  project_phase: validate.project_phase,\n  briefs_count: rows.length,\n  total_sections: totalSections,\n  avg_sections_per_page: Math.round(totalSections / Math.max(rows.length, 1) * 10) / 10,\n  total_word_count_target: totalWords,\n  avg_words_per_page: Math.round(totalWords / Math.max(rows.length, 1)),\n  total_cta_blocks: totalCTA,\n  priority_breakdown: priorityCounts,\n  avg_qc_score: avgQC,\n  schema_types_used: [...schemaAll],\n  rag_sources: ragInfo.rag_sources,\n  content_quality_stack: {\n    relevance: 'keyword coverage checked',\n    readability: 'h2 density checked',\n    eeat: 'signals per section checked',\n    aeo_geo: 'faq + aeo_questions checked',\n    humanization: 'word count + section depth checked'\n  },\n  attribution_baseline: {\n    snapshot_date: new Date().toISOString(),\n    pages: rows.map(r => ({ page_slug: r.page_slug, status: 'deployed' })),\n    note: 'Позиции до деплоя зафиксированы. Проверка через 14/30/60 дней через Attribution Protocol.'\n  },\n  workflow_changelog: {\n    workflow_id: '08',\n    workflow_name: 'ТЗ Страниц',\n    version: 'v4.0_pro',\n    date: new Date().toISOString(),\n    change: `Generated ${rows.length} briefs via Content Protocol v2.0`,\n    affected_pages: rows.map(r => r.page_slug)\n  },\n  recommendations: [\n    avgQC < 60 ? '⚠ Средний QC Score ниже 60 — рекомендуется ручная проверка ТЗ' : null,\n    totalCTA / Math.max(rows.length, 1) < 3 ? '⚠ Мало CTA блоков — добавьте CTA каждые 2-3 экрана' : null,\n    !ragInfo.rag_sources.competitors || ragInfo.rag_sources.competitors === 'no' ? '⚠ Нет данных конкурентов — запустите CI Pipeline (Шаг 33)' : null\n  ].filter(Boolean),\n  started_at: validate.started_at,\n  completed_at: new Date().toISOString()\n}}];"
+      },
+      "id": "node-build-response",
+      "name": "Build Response v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5940, 660]
+    },
+    {
+      "parameters": {},
+      "id": "node-return",
+      "name": "Return Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [6180, 660]
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Global Error Handler v4.0 ===\nconst errorData = {\n  workflow: 'NN_08_ТЗ_Страниц_v4.0',\n  error: $input.first().json.error?.message || $input.first().json.message || 'Unknown error',\n  node: $input.first().json.error?.node || 'Unknown',\n  project_id: $('Validate & Sanitize v4')?.first()?.json?.project_id || 'unknown',\n  timestamp: new Date().toISOString(),\n  version: 'v4.0_pro'\n};\nconsole.error('[Step08 v4.0 ERROR]', JSON.stringify(errorData));\nreturn [{ json: { status: 'error', ...errorData }}];"
+      },
+      "id": "node-error",
+      "name": "Error Handler",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5940, 1060],
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Validate & Sanitize v4", "type": "main", "index": 0 }]] },
+    "Cron Monthly Update": { "main": [[{ "node": "Load Active Projects", "type": "main", "index": 0 }]] },
+    "Load Active Projects": { "main": [[{ "node": "SplitInBatches Projects", "type": "main", "index": 0 }]] },
+    "SplitInBatches Projects": { "main": [[{ "node": "Validate & Sanitize v4", "type": "main", "index": 0 }]] },
+    "Validate & Sanitize v4": { "main": [[{ "node": "Get Query Embedding", "type": "main", "index": 0 }]] },
+    "Get Query Embedding": { "main": [[
+      { "node": "RAG Personas", "type": "main", "index": 0 },
+      { "node": "RAG Structures", "type": "main", "index": 0 },
+      { "node": "RAG Briefs History", "type": "main", "index": 0 },
+      { "node": "RAG Competitors", "type": "main", "index": 0 },
+      { "node": "Fetch Page Structures", "type": "main", "index": 0 },
+      { "node": "Fetch Internal Links", "type": "main", "index": 0 },
+      { "node": "Fetch KF Data", "type": "main", "index": 0 }
+    ]] },
+    "RAG Personas": { "main": [[{ "node": "Merge RAG Context v2", "type": "main", "index": 0 }]] },
+    "RAG Structures": { "main": [[{ "node": "Merge RAG Context v2", "type": "main", "index": 0 }]] },
+    "RAG Briefs History": { "main": [[{ "node": "Merge RAG Context v2", "type": "main", "index": 0 }]] },
+    "RAG Competitors": { "main": [[{ "node": "Merge RAG Context v2", "type": "main", "index": 0 }]] },
+    "Fetch Page Structures": { "main": [[{ "node": "Parse & Split Batches v2", "type": "main", "index": 0 }]] },
+    "Fetch Internal Links": { "main": [[{ "node": "Parse & Split Batches v2", "type": "main", "index": 0 }]] },
+    "Fetch KF Data": { "main": [[{ "node": "Merge RAG Context v2", "type": "main", "index": 0 }]] },
+    "Merge RAG Context v2": { "main": [[{ "node": "Parse & Split Batches v2", "type": "main", "index": 0 }]] },
+    "Parse & Split Batches v2": { "main": [[{ "node": "Loop Batches", "type": "main", "index": 0 }]] },
+    "Loop Batches": { "main": [
+      [{ "node": "Build Dynamic Prompt v4", "type": "main", "index": 0 }],
+      [{ "node": "Fetch All Results", "type": "main", "index": 0 }]
+    ] },
+    "Build Dynamic Prompt v4": { "main": [[{ "node": "Groq Page Briefs", "type": "main", "index": 0 }]] },
+    "Groq Page Briefs": { "main": [[{ "node": "Groq Failed?", "type": "main", "index": 0 }]] },
+    "Groq Failed?": { "main": [
+      [{ "node": "Fallback Ollama", "type": "main", "index": 0 }],
+      [{ "node": "Parse & Validate Briefs v2", "type": "main", "index": 0 }]
+    ] },
+    "Fallback Ollama": { "main": [[{ "node": "Parse & Validate Briefs v2", "type": "main", "index": 0 }]] },
+    "Parse & Validate Briefs v2": { "main": [[{ "node": "Quality Gate v2", "type": "main", "index": 0 }]] },
+    "Quality Gate v2": { "main": [[{ "node": "QC Passed?", "type": "main", "index": 0 }]] },
+    "QC Passed?": { "main": [
+      [{ "node": "Delete Old Briefs (filtered)", "type": "main", "index": 0 }],
+      [{ "node": "Alert QC Failure", "type": "main", "index": 0 }]
+    ] },
+    "Delete Old Briefs (filtered)": { "main": [[{ "node": "NocoDB Bulk Save", "type": "main", "index": 0 }]] },
+    "NocoDB Bulk Save": { "main": [[{ "node": "Extract ML Features v2", "type": "main", "index": 0 }]] },
+    "Extract ML Features v2": { "main": [
+      [{ "node": "ML Structure Rank", "type": "main", "index": 0 }],
+      [{ "node": "ML Content Quality", "type": "main", "index": 0 }]
+    ] },
+    "ML Structure Rank": { "main": [[{ "node": "Merge ML Scores", "type": "main", "index": 0 }]] },
+    "ML Content Quality": { "main": [[{ "node": "Merge ML Scores", "type": "main", "index": 0 }]] },
+    "Merge ML Scores": { "main": [[{ "node": "Embed Brief", "type": "main", "index": 0 }]] },
+    "Embed Brief": { "main": [[{ "node": "Qdrant Save Brief", "type": "main", "index": 0 }]] },
+    "Qdrant Save Brief": { "main": [[{ "node": "Log Success", "type": "main", "index": 0 }]] },
+    "Log Success": { "main": [[{ "node": "Loop Batches", "type": "main", "index": 0 }]] },
+    "Alert QC Failure": { "main": [[{ "node": "Log QC Failure", "type": "main", "index": 0 }]] },
+    "Log QC Failure": { "main": [[{ "node": "Loop Batches", "type": "main", "index": 0 }]] },
+    "Fetch All Results": { "main": [[{ "node": "Build Response v2", "type": "main", "index": 0 }]] },
+    "Build Response v2": { "main": [[{ "node": "Return Result", "type": "main", "index": 0 }]] }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "v4.0-pro-2026-04",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "seo-automation-v4"
+  },
+  "id": "nn08-v4-pro",
+  "tags": [
+    { "id": "tag-step08", "name": "step_08" },
+    { "id": "tag-seo-v4", "name": "SEO_v4.0" },
+    { "id": "tag-pro", "name": "PRO" },
+    { "id": "tag-content-protocol", "name": "Content_Protocol_v2" }
+  ],
+  "pinData": {}
+}
