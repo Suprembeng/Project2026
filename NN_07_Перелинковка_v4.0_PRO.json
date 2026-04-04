@@ -1,0 +1,651 @@
+{
+  "name": "NN_07_Перелинковка_v4.0_PRO",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "analyze-internal-links",
+        "options": {}
+      },
+      "id": "webhook-01",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 340],
+      "webhookId": "analyze-internal-links"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [{ "field": "weeks" }]
+        }
+      },
+      "id": "cron-01",
+      "name": "Cron Weekly Audit",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [0, 0]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.NOCODB_URL || 'http://nocodb:8080' }}/api/v1/db/data/noco/{{ $env.NOCODB_BASE || 'ppxzhw4b32456e0' }}/projects_registry?where=(status,eq,active)~and(project_phase,in,setup,growth,recovery)",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "load-projects-01",
+      "name": "Load Active Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [220, 0],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "split-01",
+      "name": "SplitInBatches",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [430, 0]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// Validate & Sanitize v2.0 — SP v4.0 compliant\n// Добавлены: niche_cluster, priority_engines, cms,\n// project_phase, intent awareness\n// ═══════════════════════════════════════════════════\n\nconst body = $input.first().json.body || $input.first().json;\nconst {\n  niche, city, project_id, target_url,\n  competitors, pages, niche_cluster,\n  priority_engines, cms, project_phase,\n  relink_frequency\n} = body;\n\n// === Обязательные поля ===\nif (!niche || typeof niche !== 'string' || niche.length > 200)\n  throw new Error('Поле \"niche\" обязательно (string, max 200)');\nif (!city || typeof city !== 'string' || city.length > 100)\n  throw new Error('Поле \"city\" обязательно (string, max 100)');\nif (!project_id || typeof project_id !== 'string')\n  throw new Error('Поле \"project_id\" обязательно');\n\n// === Санитизация ===\nconst sanitize = (s) => String(s).replace(/[{}\\[\\]\"'`;$\\\\]/g, '').trim();\nconst safeNiche = sanitize(niche);\nconst safeCity = sanitize(city);\n\n// === Niche Cluster — SP v4.0 ===\nconst validClusters = ['commercial_local', 'commercial_national', 'info', 'ecom', 'saas'];\nconst safeCluster = validClusters.includes(niche_cluster) ? niche_cluster : 'commercial_local';\n\n// === Priority Engines — [Я]/[G]/[ОБА] ===\nconst validEngines = ['yandex', 'google', 'both'];\nconst safeEngines = validEngines.includes(priority_engines) ? priority_engines : 'both';\n\n// === CMS ===\nconst validCms = ['wordpress', 'bitrix', 'tilda', 'custom', 'other'];\nconst safeCms = validCms.includes((cms || '').toLowerCase()) ? cms.toLowerCase() : 'custom';\n\n// === Project Phase ===\nconst validPhases = ['setup', 'growth', 'maintenance', 'recovery'];\nconst safePhase = validPhases.includes(project_phase) ? project_phase : 'growth';\n\n// === URL валидация ===\nlet safeTargetUrl = '';\nif (target_url) {\n  try { new URL(target_url); safeTargetUrl = target_url; }\n  catch(e) { safeTargetUrl = ''; }\n}\n\n// === Конкуренты ===\nlet competitorsList = [];\nif (Array.isArray(competitors) && competitors.length > 0) {\n  competitorsList = competitors.slice(0, 5).map(c => sanitize(c));\n}\n\n// === Страницы ===\nlet pagesList = [];\nif (Array.isArray(pages) && pages.length > 0) {\n  pagesList = pages;\n}\n\n// === Динамический embed_query (без хардкода года) ===\nconst embed_query = `${safeNiche} ${safeCity} перелинковка внутренние ссылки анкоры навигация структура кластеры ${safeCluster} SEO`;\n\nreturn [{ json: {\n  niche: safeNiche,\n  city: safeCity,\n  project_id: project_id,\n  target_url: safeTargetUrl,\n  competitors: competitorsList,\n  pages_input: pagesList,\n  niche_cluster: safeCluster,\n  priority_engines: safeEngines,\n  cms: safeCms,\n  project_phase: safePhase,\n  relink_frequency: relink_frequency || 'monthly',\n  embed_query: embed_query,\n  workflow_version: 'v4.0_pro'\n}}];"
+      },
+      "id": "validate-01",
+      "name": "Validate & Sanitize v2.0",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [340, 340],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"bge-m3\",\n  \"prompt\": \"{{ $json.embed_query }}\"\n}"
+      },
+      "id": "embed-query-01",
+      "name": "Get Query Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [580, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/seo_personas/points/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($('Get Query Embedding').first().json.embedding) }},\n  \"limit\": 3,\n  \"with_payload\": true,\n  \"score_threshold\": 0.55\n}"
+      },
+      "id": "rag-personas-01",
+      "name": "RAG seo_personas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 160],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/top10_page_structures/points/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($('Get Query Embedding').first().json.embedding) }},\n  \"limit\": 3,\n  \"with_payload\": true,\n  \"score_threshold\": 0.55\n}"
+      },
+      "id": "rag-structures-01",
+      "name": "RAG page_structures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 340],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/internal_links_history/points/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"vector\": {{ JSON.stringify($('Get Query Embedding').first().json.embedding) }},\n  \"limit\": 3,\n  \"with_payload\": true,\n  \"score_threshold\": 0.55\n}"
+      },
+      "id": "rag-links-01",
+      "name": "RAG links_history",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 520],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.NOCODB_URL || 'http://nocodb:8080' }}/api/v1/db/data/noco/{{ $env.NOCODB_BASE || 'ppxzhw4b32456e0' }}/{{ $env.TABLE_PAGE_STRUCTURES || 'mvd9w6n0m6uaon1' }}?where=(project_id,eq,{{ $('Validate & Sanitize v2.0').first().json.project_id }})&limit=200&fields=page_type,cluster_name,recommended_url,main_keyword,total_blocks,intent,backlinks_count",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "fetch-pages-01",
+      "name": "Fetch Page Structures v2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 700]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.NOCODB_URL || 'http://nocodb:8080' }}/api/v1/db/data/noco/{{ $env.NOCODB_BASE || 'ppxzhw4b32456e0' }}/{{ $env.TABLE_BACKLINKS || 'backlinks_profile' }}?where=(project_id,eq,{{ $('Validate & Sanitize v2.0').first().json.project_id }})&limit=50&sort=-backlinks_count&fields=recommended_url,backlinks_count,domain_rating",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "fetch-backlinks-01",
+      "name": "Fetch Backlinks",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [840, 880],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// Format RAG Context v2.0\n// + Backlink magnets, навигационные паттерны полные,\n// + КФ/E-E-A-T контекст\n// ═══════════════════════════════════════════════════\n\nlet personaResults = [], structResults = [], linksHistory = [];\ntry { personaResults = $('RAG seo_personas').first().json.result || []; } catch(e) {}\ntry { structResults = $('RAG page_structures').first().json.result || []; } catch(e) {}\ntry { linksHistory = $('RAG links_history').first().json.result || []; } catch(e) {}\n\n// === Персоны (без обрезки до 200 символов) ===\nlet personaContext = '';\nif (personaResults.length > 0) {\n  personaContext = '=== ЦЕЛЕВАЯ АУДИТОРИЯ ===\\n';\n  personaResults.forEach((r, i) => {\n    const p = r.payload || {};\n    personaContext += `Персона ${i+1}: ${p.persona_name || 'N/A'}`;\n    if (p.navigation_patterns) personaContext += `\\n  Навигация: ${typeof p.navigation_patterns === 'string' ? p.navigation_patterns : JSON.stringify(p.navigation_patterns).substring(0, 500)}`;\n    if (p.pain_points) personaContext += `\\n  Боли: ${typeof p.pain_points === 'string' ? p.pain_points : JSON.stringify(p.pain_points).substring(0, 500)}`;\n    if (p.conversion_triggers) personaContext += `\\n  Триггеры конверсии: ${typeof p.conversion_triggers === 'string' ? p.conversion_triggers : JSON.stringify(p.conversion_triggers).substring(0, 300)}`;\n    personaContext += '\\n\\n';\n  });\n}\n\n// === Структуры конкурентов ===\nlet structContext = '';\nif (structResults.length > 0) {\n  structContext = '\\n=== СТРУКТУРЫ КОНКУРЕНТОВ (ТОП-10) ===\\n';\n  structResults.forEach((r, i) => {\n    const p = r.payload || {};\n    structContext += `Конкурент ${i+1}: ${p.niche || ''} | Кластеров: ${p.clusters_count || 'N/A'} | Глубина: ${p.max_depth || 'N/A'}`;\n    if (p.linking_patterns) structContext += ` | Паттерны: ${JSON.stringify(p.linking_patterns).substring(0, 300)}`;\n    structContext += '\\n';\n  });\n}\n\n// === История перелинковок ===\nlet histContext = '';\nif (linksHistory.length > 0) {\n  histContext = '\\n=== ИСТОРИЯ ПЕРЕЛИНКОВОК ===\\n';\n  linksHistory.forEach((r, i) => {\n    const p = r.payload || {};\n    histContext += `Анализ ${i+1}: ${p.niche || ''} | Ссылок: ${p.links_count || 0} | QC: ${p.qc_score || 'N/A'}%\\n`;\n  });\n}\n\n// === Backlink Magnets ===\nlet backlinkContext = '';\ntry {\n  const blData = $('Fetch Backlinks').first().json;\n  const blList = blData.list || blData || [];\n  if (Array.isArray(blList) && blList.length > 0) {\n    backlinkContext = '\\n=== BACKLINK MAGNETS (страницы с внешними ссылками) ===\\n';\n    blList.slice(0, 10).forEach((b, i) => {\n      backlinkContext += `${i+1}. ${b.recommended_url || b.url || ''} | Внешних ссылок: ${b.backlinks_count || 0} | DR: ${b.domain_rating || 'N/A'}\\n`;\n    });\n    backlinkContext += 'ВАЖНО: Эти страницы передают link equity — используй их как ИСТОЧНИКИ внутренних ссылок на коммерческие страницы.\\n';\n  }\n} catch(e) {}\n\nreturn [{ json: {\n  rag_context: (personaContext || 'Нет данных о персонах.') + structContext + histContext + backlinkContext,\n  rag_persona_sources: personaResults.length,\n  rag_struct_sources: structResults.length,\n  rag_history_sources: linksHistory.length,\n  has_backlink_data: backlinkContext.length > 0\n}}];"
+      },
+      "id": "format-rag-01",
+      "name": "Format RAG Context v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1140, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════════════\n// Build Links Prompt v4.0 — SP v4.0 полная реализация\n// [Я]/[G] маркировка · Intent segmentation · КФ · E-E-A-T\n// Few-shot анкоры · Niche cluster адаптация\n// Chunked generation для >10 страниц\n// ═══════════════════════════════════════════════════════════\n\nconst response = $('Fetch Page Structures v2').first().json;\nconst validate = $('Validate & Sanitize v2.0').first().json;\nconst ragInfo = $('Format RAG Context v2').first().json;\n\nconst rows = response.list || [];\n\n// === Merge with pages_input ===\nlet allPages = [...rows];\nif (validate.pages_input && validate.pages_input.length > 0) {\n  const existingUrls = new Set(rows.map(r => r.recommended_url));\n  validate.pages_input.forEach(p => {\n    if (!existingUrls.has(p.url)) {\n      allPages.push({\n        page_type: p.type || 'page',\n        cluster_name: p.cluster || '',\n        recommended_url: p.url,\n        main_keyword: p.keyword || '',\n        total_blocks: p.blocks || 0,\n        intent: p.intent || 'transactional',\n        backlinks_count: p.backlinks_count || 0\n      });\n    }\n  });\n}\n\nif (allPages.length === 0) {\n  throw new Error('Нет страниц для перелинковки. Сначала выполните шаг 04 (Структура страниц).');\n}\n\n// === Pages Context с intent и backlinks ===\nlet pagesContext = `\\n=== СТРАНИЦЫ ПРОЕКТА (${allPages.length} шт.) ===\\n\\n`;\nallPages.forEach((r, i) => {\n  const intent = r.intent || 'transactional';\n  const bl = r.backlinks_count || 0;\n  pagesContext += `${i+1}. [${(r.page_type||'').toUpperCase()}] [${intent.toUpperCase()}] ${r.cluster_name||''}`;\n  pagesContext += ` | URL: ${r.recommended_url||''}`;\n  pagesContext += ` | Ключ: ${r.main_keyword||''}`;\n  pagesContext += ` | Блоков: ${r.total_blocks||0}`;\n  if (bl > 0) pagesContext += ` | 🔗Внешних: ${bl}`;\n  pagesContext += '\\n';\n});\n\n// === Cluster Map ===\nconst clusters = {};\nallPages.forEach(p => {\n  const cl = p.cluster_name || 'uncategorized';\n  if (!clusters[cl]) clusters[cl] = [];\n  clusters[cl].push({ url: p.recommended_url || '', intent: p.intent || 'transactional' });\n});\n\nlet clusterMap = '\\n=== КАРТА КЛАСТЕРОВ ===\\n';\nObject.entries(clusters).forEach(([name, pages]) => {\n  const intents = pages.map(p => p.intent);\n  const transCount = intents.filter(i => i === 'transactional').length;\n  clusterMap += `Кластер \"${name}\": ${pages.length} стр. (${transCount} коммерч.) → ${pages.slice(0,5).map(p=>p.url).join(', ')}\\n`;\n});\n\n// ═══════════════════════════════════════════\n// [Я]/[G] ENGINE INSTRUCTIONS — SP v4.0\n// ═══════════════════════════════════════════\nconst engines = validate.priority_engines;\n\nlet engineInstructions = '';\nif (engines === 'both' || engines === 'yandex') {\n  engineInstructions += `\\n[Я] ЯНДЕКС — обязательные типы ссылок:\\n`;\n  engineInstructions += `  • КФ-ССЫЛКИ: каждая страница → ссылка на Цены, Гарантии, Сертификаты, Команду, Отзывы\\n`;\n  engineInstructions += `  • ГЕОЗАВИСИМЫЕ: /район-услуга/ перелинковка (если есть гео-страницы)\\n`;\n  engineInstructions += `  • ПФ-ОПТИМИЗАЦИЯ: ссылки в зонах максимального внимания (первый экран, после H1)\\n`;\n  engineInstructions += `  • Яндекс.Бизнес/2GIS: ссылки на карточки из Footer\\n\\n`;\n}\nif (engines === 'both' || engines === 'google') {\n  engineInstructions += `[G] GOOGLE — обязательные типы ссылок:\\n`;\n  engineInstructions += `  • E-E-A-T: ссылки на авторские страницы, credentials, лицензии\\n`;\n  engineInstructions += `  • SCHEMA-ALIGNED: Service→FAQ, FAQ→Review, Review→LocalBusiness (согласно Schema.org)\\n`;\n  engineInstructions += `  • TOPICAL AUTHORITY: hub→spoke внутри semantic cluster (pillar→cluster)\\n`;\n  engineInstructions += `  • CWV-SAFE: не перегружай страницу ссылками (макс 100 внутренних на страницу)\\n\\n`;\n}\nengineInstructions += `[ОБА] УНИВЕРСАЛЬНЫЕ:\\n`;\nengineInstructions += `  • Иерархия: главная → категории → услуги\\n`;\nengineInstructions += `  • Breadcrumbs, main_menu, footer — обязательны\\n`;\nengineInstructions += `  • Глубина: любая страница ≤3 клика от главной\\n`;\n\n// === Intent Strategy ===\nconst intentStrategy = `\\nINTENT-BASED LINKING (ОБЯЗАТЕЛЬНО):\\n- TRANSACTIONAL страницы (услуги, цены): ≥5 входящих, ≤3 исходящих\\n  Цель: максимум link equity на конверсионные страницы\\n- INFORMATIONAL (блог, FAQ): ≤3 входящих, ≥3 исходящих на коммерческие\\n  Цель: передача authority через content links\\n- NAVIGATIONAL (главная, категории): hub-ноды, ≥5 исходящих\\n  Цель: распределение PageRank по всей структуре\\n\\nBACKLINK MAGNETS: страницы с внешними ссылками — приоритетные ИСТОЧНИКИ\\nвнутренних ссылок. Передают authority на коммерческие.\\n`;\n\n// === Niche Cluster Adaptation ===\nconst clusterAdaptation = {\n  commercial_local: 'ФОКУС: КФ-ссылки, Local SEO, геозависимые страницы, карточки организации. Каждая услуга → ссылка на район.',\n  commercial_national: 'ФОКУС: Ссылочный профиль, E-E-A-T, Programmatic (Услуга × Город). Featured Snippets через FAQ-перелинковку.',\n  ecom: 'ФОКУС: Категории → подкатегории → товары. Фильтры → canonical. Breadcrumbs обязательны. Product schema linking.',\n  saas: 'ФОКУС: Blog Pipeline → Feature Pages. Entity SEO. Мультиязычность (hreflang). Topic clusters.',\n  info: 'ФОКУС: Content Quality, Pillar→Cluster, авторские страницы. YMYL-требования. Decay-мониторинг.'\n};\nconst nicheNote = clusterAdaptation[validate.niche_cluster] || clusterAdaptation.commercial_local;\n\n// === Few-shot Anchor Examples ===\nconst anchorExamples = `\\nПРИМЕРЫ КАЧЕСТВЕННЫХ АНКОРОВ:\\n✓ \"лечение кариеса без боли\" — ключ + УТП\\n✓ \"наши стоматологи с 15-летним опытом\" — E-E-A-T\\n✓ \"цены на имплантацию зубов в ${validate.city}\" — КФ [Я] + гео\\n✓ \"подробнее об отбеливании\" — навигационный\\n✓ \"читать отзывы пациентов\" — social proof\\n✓ \"гарантия 5 лет на все работы\" — КФ [Я]\\n✗ НЕ ИСПОЛЬЗОВАТЬ: \"подробнее\", \"нажмите здесь\", \"читать далее\" (пустые анкоры)\\n✗ НЕ ИСПОЛЬЗОВАТЬ: повторение одного анкора >2 раз\\n✗ НЕ ИСПОЛЬЗОВАТЬ: keyword stuffing в анкорах\\n`;\n\n// === CMS Adaptation ===\nconst cmsNotes = {\n  wordpress: 'CMS WordPress: sidebar виджеты, footer меню, шорткоды CTA доступны.',\n  bitrix: 'CMS Bitrix: компоненты навигации, включаемые области. Sidebar через компонент.',\n  tilda: 'CMS Tilda: ограничения — нет sidebar, footer ограничен. Используй content и CTA типы.',\n  custom: 'CMS кастомная: все типы ссылок доступны.',\n  other: 'CMS: проверь доступность sidebar и footer.'\n};\nconst cmsNote = cmsNotes[validate.cms] || cmsNotes.custom;\n\n// ═══════════════════════════════════════════\n// SYSTEM PROMPT\n// ═══════════════════════════════════════════\nconst systemPrompt = `Ты Senior SEO-архитектор внутренней перелинковки. Экспертиза: Яндекс + Google, коммерческое SEO.\n\nЗАДАЧА: построить полный граф внутренней перелинковки между ВСЕМИ страницами проекта.\n\n${ragInfo.rag_context}\n${pagesContext}\n${clusterMap}\n\nНИШЕВАЯ АДАПТАЦИЯ (${validate.niche_cluster}):\n${nicheNote}\n\n${cmsNote}\n\n${engineInstructions}\n${intentStrategy}\n\nПРИНЦИПЫ ПЕРЕЛИНКОВКИ (в порядке приоритета):\n\n1. ИЕРАРХИЯ: главная → категории → подкатегории → услуги/статьи\n2. КЛАСТЕРНАЯ СВЯЗНОСТЬ: ВСЕ страницы одного кластера связаны (hub & spoke)\n3. МЕЖКЛАСТЕРНЫЕ МОСТЫ: 2-3 тематических ссылки между смежными кластерами\n4. PAGERANK FLOW: коммерческие/transactional страницы получают БОЛЬШЕ входящих\n5. BACKLINK MAGNETS: страницы с внешними ссылками → источники internal links на commercial\n6. НЕТ СИРОТ: каждая страница имеет минимум 3 входящие ссылки\n7. АНКОРЫ: естественные, разнообразные, с ключевым словом целевой страницы\n8. ГЛУБИНА КЛИКА: любая страница ≤3 клика от главной\n9. RECIPROCAL LINKS: избегать взаимных ссылок A↔B (макс 15%)\n10. КФ-ПОКРЫТИЕ [Я]: каждая коммерческая → ссылки на цены/гарантии/отзывы/команду\n11. E-E-A-T LINKING [G]: ссылки на авторов, сертификаты, исследования\n\n${anchorExamples}\n\nТИПЫ ССЫЛОК (link_type):\n- main_menu: навигационная ссылка из главного меню\n- breadcrumb: хлебные крошки\n- content: контекстная ссылка в тексте\n- sidebar: ссылка из боковой панели\n- related: блок \"Похожие услуги/статьи\"\n- footer: ссылка из подвала\n- cta: call-to-action блок\n\nДля каждой ссылки ОБЯЗАТЕЛЬНО:\n- from_url: URL страницы-источника (СТРОГО из списка страниц выше!)\n- to_url: URL целевой страницы (СТРОГО из списка страниц выше!)\n- anchor: текст анкора (естественный, разнообразный)\n- link_type: СТРОГО одно из [main_menu, breadcrumb, content, sidebar, related, footer, cta]\n- priority: 1-100 (1 = самая важная)\n- context: описание WHERE на странице и ЗАЧЕМ размещена ссылка\n- engine_tag: \"Я\" или \"G\" или \"ОБА\"\n- intent_flow: \"transactional→transactional\" или \"informational→transactional\" и т.д.\n\nКРИТИЧЕСКИЕ ПРАВИЛА:\n- ИСПОЛЬЗУЙ ТОЛЬКО URL из списка страниц выше. НЕ ПРИДУМЫВАЙ новые URL!\n- Каждый URL должен быть и источником, и целью хотя бы одной ссылки\n- Минимум 7 типов ссылок задействовано\n\nОтветь СТРОГО JSON (без markdown, без комментариев):\n{\"internal_links\":[...], \"orphan_check\": {\"all_pages_linked\": true/false, \"orphans\": []}, \"graph_stats\": {\"total_links\": N, \"avg_incoming\": N, \"max_depth\": N, \"type_distribution\": {}}}`;\n\n// ═══════════════════════════════════════════\n// USER PROMPT\n// ═══════════════════════════════════════════\nconst minLinks = Math.max(30, allPages.length * 5);\nconst userPrompt = `НИША: ${validate.niche} | ГОРОД: ${validate.city} | КЛАСТЕР: ${validate.niche_cluster}\\nДВИЖКИ: ${validate.priority_engines.toUpperCase()} | CMS: ${validate.cms}\\nСТРАНИЦ: ${allPages.length} | КЛАСТЕРОВ: ${Object.keys(clusters).length}\\n\\nПострой полный граф перелинковки. Требования:\\n• Минимум ${minLinks} ссылок\\n• Каждая страница: мин. 3 входящих + 2 исходящих\\n• Используй все 7 типов ссылок\\n• Анкоры разнообразные (не повторяй один и тот же)\\n• Маркируй каждую ссылку engine_tag: Я/G/ОБА\\n• Указывай intent_flow для каждой ссылки\\n• ИСПОЛЬЗУЙ ТОЛЬКО URL из списка страниц!\\n• Проверь: нет сирот, глубина ≤3 клика\\nОтветь СТРОГО JSON.`;\n\nconst payload = {\n  model: 'llama-3.3-70b-versatile',\n  max_tokens: 16000,\n  temperature: 0.2,\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: systemPrompt },\n    { role: 'user', content: userPrompt }\n  ]\n};\n\n// === Collect valid URLs for verification later ===\nconst validUrlSet = allPages.map(p => p.recommended_url).filter(Boolean);\n\nreturn [{ json: {\n  groq_payload: payload,\n  project_id: validate.project_id,\n  niche: validate.niche,\n  city: validate.city,\n  niche_cluster: validate.niche_cluster,\n  priority_engines: validate.priority_engines,\n  cms: validate.cms,\n  pages_count: allPages.length,\n  clusters_count: Object.keys(clusters).length,\n  cluster_map: clusters,\n  valid_urls: validUrlSet,\n  min_links: minLinks\n}}];"
+      },
+      "id": "build-prompt-01",
+      "name": "Build Links Prompt v4.0",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.groq_payload }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "groq-01",
+      "name": "Groq Internal Links",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1660, 340],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// Parse & Validate Links v2.0\n// Weighted QC scoring · URL verification\n// Intent flow tracking · Engine tag validation\n// ═══════════════════════════════════════════════════\n\nconst groqResponse = $input.first().json;\nconst batchInfo = $('Build Links Prompt v4.0').first().json;\n\n// === Groq error handling ===\nif (groqResponse.error) {\n  return [{ json: {\n    links_count: 0, nocodb_payload: [], verified_links: [],\n    error: groqResponse.error.message || 'Groq error',\n    groq_tokens: 0, qc_score: 0, graph_stats: null,\n    orphan_check: null, hallucinated_links: []\n  }}];\n}\n\n// === Parse JSON response ===\nconst rawContent = groqResponse?.choices?.[0]?.message?.content || '';\nlet cleanJson = rawContent.replace(/```json\\s*/gi, '').replace(/```\\s*/gi, '').trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(cleanJson);\n} catch (err) {\n  const objMatch = cleanJson.match(/\\{[\\s\\S]+\\}/);\n  if (objMatch) {\n    try { parsed = JSON.parse(objMatch[0]); } catch(e2) {}\n  }\n  if (!parsed) {\n    return [{ json: {\n      links_count: 0, nocodb_payload: [], verified_links: [],\n      error: 'Invalid JSON: ' + rawContent.substring(0, 300),\n      groq_tokens: groqResponse?.usage?.total_tokens || 0,\n      qc_score: 0, graph_stats: null, orphan_check: null,\n      hallucinated_links: []\n    }}];\n  }\n}\n\nif (Array.isArray(parsed)) parsed = { internal_links: parsed };\nelse if (parsed && !parsed.internal_links && parsed.from_url) parsed = { internal_links: [parsed] };\n\nconst validTypes = ['main_menu', 'breadcrumb', 'content', 'sidebar', 'related', 'footer', 'cta'];\nconst validEngines = ['Я', 'G', 'ОБА'];\n\n// === Valid URLs set (from page_structures) ===\nconst validUrlSet = new Set(batchInfo.valid_urls || []);\n\n// === Dedup + Validate + URL Verify ===\nconst seen = new Set();\nconst verified = [];\nconst hallucinated = [];\n\n(parsed.internal_links || []).forEach((l, idx) => {\n  const key = (l.from_url || '') + '→' + (l.to_url || '') + '→' + (l.link_type || '');\n  if (seen.has(key)) return;\n  seen.add(key);\n\n  // Skip self-links\n  if (l.from_url && l.to_url && l.from_url === l.to_url) return;\n\n  const fromOk = validUrlSet.has(l.from_url);\n  const toOk = validUrlSet.has(l.to_url);\n\n  const link = {\n    project_id: batchInfo.project_id,\n    from_url: l.from_url || '',\n    to_url: l.to_url || '',\n    anchor: l.anchor || '',\n    link_type: validTypes.includes(l.link_type) ? l.link_type : 'content',\n    priority: Math.min(Math.max(l.priority || (idx + 1), 1), 100),\n    context: l.context || '',\n    engine_tag: validEngines.includes(l.engine_tag) ? l.engine_tag : 'ОБА',\n    intent_flow: l.intent_flow || '',\n    status: 'pending',\n    version: 'v4.0',\n    created_at: new Date().toISOString()\n  };\n\n  if (fromOk && toOk) {\n    verified.push(link);\n  } else {\n    hallucinated.push({\n      ...link,\n      reason: !fromOk ? 'from_url not in page_structures' : 'to_url not in page_structures'\n    });\n  }\n});\n\n// ═══════════════════════════════════════════\n// Weighted QC Scoring v2.0\n// ═══════════════════════════════════════════\nlet qcScore = 100;\nconst issues = [];\n\n// 1. Минимум ссылок (-25)\nconst minLinks = batchInfo.min_links || 30;\nif (verified.length < minLinks) {\n  const penalty = Math.min(25, Math.round((1 - verified.length / minLinks) * 25));\n  qcScore -= penalty;\n  issues.push(`Мало ссылок: ${verified.length}/${minLinks} (-${penalty})`);\n}\n\n// 2. Hallucinated URLs (-30 max)\nconst hallRate = verified.length + hallucinated.length > 0\n  ? hallucinated.length / (verified.length + hallucinated.length) * 100 : 0;\nif (hallRate > 5) {\n  const penalty = Math.min(30, Math.round(hallRate * 0.6));\n  qcScore -= penalty;\n  issues.push(`Hallucinated URLs: ${hallRate.toFixed(1)}% (${hallucinated.length} шт.) (-${penalty})`);\n}\n\n// 3. Orphans — страницы с <2 входящих (-20)\nconst incomingCount = {};\nverified.forEach(l => { incomingCount[l.to_url] = (incomingCount[l.to_url] || 0) + 1; });\nconst allUrls = [...validUrlSet];\nconst orphans = allUrls.filter(u => !incomingCount[u] || incomingCount[u] < 2);\nif (orphans.length > 0) {\n  const penalty = Math.min(20, orphans.length * 4);\n  qcScore -= penalty;\n  issues.push(`Сироты (<2 входящих): ${orphans.length} шт. (-${penalty})`);\n}\n\n// 4. Link type diversity (-15)\nconst typeDistribution = {};\nverified.forEach(l => { typeDistribution[l.link_type] = (typeDistribution[l.link_type] || 0) + 1; });\nconst typesUsed = Object.keys(typeDistribution).length;\nif (typesUsed < 4) {\n  const penalty = Math.min(15, (4 - typesUsed) * 5);\n  qcScore -= penalty;\n  issues.push(`Мало типов ссылок: ${typesUsed}/7 (${Object.keys(typeDistribution).join(', ')}) (-${penalty})`);\n}\n\n// 5. Reciprocal ratio (-10)\nconst reciprocal = verified.filter(l =>\n  verified.some(l2 => l2.from_url === l.to_url && l2.to_url === l.from_url)\n);\nconst reciprocalRatio = verified.length > 0 ? reciprocal.length / verified.length : 0;\nif (reciprocalRatio > 0.15) {\n  qcScore -= 10;\n  issues.push(`Высокий reciprocal: ${(reciprocalRatio * 100).toFixed(0)}% (-10)`);\n}\n\n// 6. Missing engine_tag (-5) — only if priority_engines=both\nconst engineDist = {};\nverified.forEach(l => { engineDist[l.engine_tag] = (engineDist[l.engine_tag] || 0) + 1; });\nif (batchInfo.priority_engines === 'both' && Object.keys(engineDist).length < 2) {\n  qcScore -= 5;\n  issues.push(`Нет [Я]/[G] разделения (-5)`);\n}\n\nqcScore = Math.max(0, qcScore);\n\n// === Graph Stats ===\nconst outgoingCount = {};\nverified.forEach(l => { outgoingCount[l.from_url] = (outgoingCount[l.from_url] || 0) + 1; });\nconst avgIncoming = allUrls.length > 0\n  ? Object.values(incomingCount).reduce((a, b) => a + b, 0) / allUrls.length : 0;\n\nreturn [{ json: {\n  links_count: verified.length,\n  nocodb_payload: verified,\n  verified_links: verified,\n  hallucinated_links: hallucinated,\n  hallucination_rate: hallRate.toFixed(1),\n  groq_tokens: groqResponse?.usage?.total_tokens || 0,\n  error: null,\n  qc_score: qcScore,\n  issues: issues.length > 0 ? issues : null,\n  graph_stats: {\n    total_links: verified.length,\n    avg_incoming: avgIncoming.toFixed(1),\n    max_outgoing: Math.max(...Object.values(outgoingCount), 0),\n    pages_covered: new Set([...verified.map(l => l.from_url), ...verified.map(l => l.to_url)]).size,\n    pages_total: allUrls.length\n  },\n  orphan_check: {\n    all_pages_linked: orphans.length === 0,\n    orphans: orphans.slice(0, 10)\n  },\n  type_distribution: typeDistribution,\n  engine_distribution: engineDist,\n  reciprocal_ratio: reciprocalRatio,\n  valid_urls_count: validUrlSet.size\n}}];"
+      },
+      "id": "parse-validate-01",
+      "name": "Parse & Validate Links v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 340]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// PageRank Calculator\n// Iterative PageRank on generated link graph\n// Damping factor 0.85, 20 iterations\n// Detects PageRank leaks to non-commercial pages\n// ═══════════════════════════════════════════════════\n\nconst linkData = $input.first().json;\nconst links = linkData.verified_links || linkData.nocodb_payload || [];\n\nif (links.length === 0) {\n  return [{ json: { ...linkData, pagerank: [], top5: [], leaks: [], leak_warning: false }}];\n}\n\nconst damping = 0.85;\nconst iterations = 20;\n\n// Build URL set\nconst allUrls = [...new Set([...links.map(l => l.from_url), ...links.map(l => l.to_url)])];\nconst N = allUrls.length;\n\nif (N === 0) {\n  return [{ json: { ...linkData, pagerank: [], top5: [], leaks: [], leak_warning: false }}];\n}\n\n// Initialize PageRank\nlet pr = {};\nallUrls.forEach(u => pr[u] = 1 / N);\n\n// Build outgoing map\nconst outgoing = {};\nlinks.forEach(l => {\n  if (!outgoing[l.from_url]) outgoing[l.from_url] = [];\n  outgoing[l.from_url].push(l.to_url);\n});\n\n// Build incoming map\nconst incoming = {};\nlinks.forEach(l => {\n  if (!incoming[l.to_url]) incoming[l.to_url] = [];\n  incoming[l.to_url].push(l.from_url);\n});\n\n// Iterate\nfor (let i = 0; i < iterations; i++) {\n  const newPr = {};\n  allUrls.forEach(u => {\n    let sum = 0;\n    (incoming[u] || []).forEach(src => {\n      const outCount = (outgoing[src] || []).length;\n      if (outCount > 0) sum += pr[src] / outCount;\n    });\n    newPr[u] = (1 - damping) / N + damping * sum;\n  });\n  pr = newPr;\n}\n\n// Sort by PageRank\nconst ranked = Object.entries(pr)\n  .sort((a, b) => b[1] - a[1])\n  .map(([url, score]) => ({ url, pagerank: parseFloat(score.toFixed(6)) }));\n\n// Detect leaks: check if top-5 PR pages are commercial\n// Use intent_flow from links to determine commercial pages\nconst commercialUrls = new Set();\nlinks.forEach(l => {\n  if (l.intent_flow && l.intent_flow.includes('transactional')) {\n    commercialUrls.add(l.to_url);\n  }\n});\n\nconst leaks = ranked.slice(0, 5).filter(r => !commercialUrls.has(r.url) && commercialUrls.size > 0);\n\n// PageRank concentration: % of total PR in top-3 pages\nconst totalPr = Object.values(pr).reduce((a, b) => a + b, 0);\nconst top3Pr = ranked.slice(0, 3).reduce((a, r) => a + r.pagerank, 0);\nconst concentration = totalPr > 0 ? (top3Pr / totalPr * 100).toFixed(1) : 0;\n\nreturn [{ json: {\n  ...linkData,\n  pagerank: ranked,\n  pagerank_top5: ranked.slice(0, 5),\n  pagerank_leaks: leaks,\n  pagerank_leak_warning: leaks.length > 2,\n  pagerank_concentration: concentration\n}}];"
+      },
+      "id": "pagerank-calc-01",
+      "name": "PageRank Calculator",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2180, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ml-service:8000/predict/link_value",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"project_id\": \"{{ $('Build Links Prompt v4.0').first().json.project_id }}\",\n  \"total_pages\": {{ $('Build Links Prompt v4.0').first().json.pages_count }},\n  \"total_links\": {{ $json.links_count }},\n  \"clusters_count\": {{ $('Build Links Prompt v4.0').first().json.clusters_count }},\n  \"type_distribution\": {{ JSON.stringify($json.type_distribution || {}) }},\n  \"reciprocal_ratio\": {{ $json.reciprocal_ratio || 0 }},\n  \"orphan_count\": {{ ($json.orphan_check?.orphans || []).length }},\n  \"avg_incoming\": {{ $json.graph_stats?.avg_incoming || 0 }},\n  \"hallucination_rate\": {{ $json.hallucination_rate || 0 }},\n  \"pagerank_concentration\": {{ $json.pagerank_concentration || 0 }},\n  \"pagerank_leak_count\": {{ ($json.pagerank_leaks || []).length }}\n}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "ml-link-value-01",
+      "name": "ML Link Value",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2440, 340],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// Quality Gate v2.0 — двухуровневый\n// Combined score: QC (0.6) + ML (0.4)\n// Три исхода: PASS / REVIEW / REJECT\n// ═══════════════════════════════════════════════════\n\nconst data = $('PageRank Calculator').first().json;\nlet mlResponse = {};\ntry { mlResponse = $('ML Link Value').first().json || {}; } catch(e) {}\n\nconst qcScore = data.qc_score || 0;\nconst mlScore = mlResponse.score != null ? mlResponse.score : qcScore; // fallback to QC if ML unavailable\nconst combinedScore = Math.round(qcScore * 0.6 + mlScore * 0.4);\n\nconst hallRate = parseFloat(data.hallucination_rate || 0);\nconst prLeaks = (data.pagerank_leaks || []).length;\n\n// === Decision Logic ===\nlet decision = 'pass';\nlet status = 'active';\nconst reasons = [];\n\n// REJECT conditions\nif (combinedScore < 50) { decision = 'reject'; reasons.push(`Combined score ${combinedScore} < 50`); }\nif (hallRate > 15) { decision = 'reject'; reasons.push(`Hallucination rate ${hallRate}% > 15%`); }\nif (data.links_count === 0) { decision = 'reject'; reasons.push('Zero links generated'); }\n\n// REVIEW conditions (only if not already rejected)\nif (decision !== 'reject') {\n  if (combinedScore < 65) { decision = 'review'; status = 'review_needed'; reasons.push(`Combined score ${combinedScore} < 65`); }\n  if (hallRate > 5) { decision = 'review'; status = 'review_needed'; reasons.push(`Hallucination rate ${hallRate}%`); }\n  if (prLeaks > 2) { decision = 'review'; status = 'review_needed'; reasons.push(`PageRank leaks: ${prLeaks}`); }\n}\n\nreturn [{ json: {\n  ...data,\n  ml_score: mlScore,\n  ml_label: mlResponse.label || null,\n  ml_confidence: mlResponse.confidence || null,\n  combined_score: combinedScore,\n  gate_decision: decision,\n  gate_status: status,\n  gate_reasons: reasons\n}}];"
+      },
+      "id": "quality-gate-logic-01",
+      "name": "Quality Gate Logic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2700, 340]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "gate-decision",
+              "leftValue": "={{ $json.gate_decision }}",
+              "rightValue": "reject",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "quality-gate-if-01",
+      "name": "Quality Gate v2",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2960, 340]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL || 'http://localhost:5678/webhook/alerts' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"workflow\": \"NN_07_Перелинковка_v4.0\",\n  \"severity\": \"{{ $json.gate_decision === 'reject' ? 'critical' : 'warning' }}\",\n  \"decision\": \"{{ $json.gate_decision }}\",\n  \"combined_score\": {{ $json.combined_score }},\n  \"qc_score\": {{ $json.qc_score }},\n  \"ml_score\": {{ $json.ml_score || 0 }},\n  \"reasons\": {{ JSON.stringify($json.gate_reasons || []) }},\n  \"issues\": {{ JSON.stringify($json.issues || []) }},\n  \"hallucination_rate\": \"{{ $json.hallucination_rate }}%\",\n  \"project_id\": \"{{ $('Build Links Prompt v4.0').first().json.project_id }}\",\n  \"timestamp\": \"{{ new Date().toISOString() }}\"\n}",
+        "options": {}
+      },
+      "id": "alert-quality-01",
+      "name": "Alert: Quality Issue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3220, 580],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// Attribution Snapshot — SP v4.0 Attribution Protocol\n// Фиксация baseline позиций ПЕРЕД изменением\n// Deploy → Measure (14/30/60d) → Attribute → Retrain\n// ═══════════════════════════════════════════════════\n\nconst data = $input.first().json;\nconst projectId = $('Build Links Prompt v4.0').first().json.project_id;\n\nconst now = new Date();\nconst d14 = new Date(now); d14.setDate(d14.getDate() + 14);\nconst d30 = new Date(now); d30.setDate(d30.getDate() + 30);\nconst d60 = new Date(now); d60.setDate(d60.getDate() + 60);\n\nconst snapshot = {\n  project_id: projectId,\n  workflow_id: '07',\n  workflow_name: 'Перелинковка',\n  version: 'v4.0',\n  change_type: 'full_relink',\n  links_count: data.links_count,\n  combined_score: data.combined_score,\n  gate_decision: data.gate_decision,\n  gate_status: data.gate_status,\n  snapshot_date: now.toISOString(),\n  measure_date_14d: d14.toISOString().split('T')[0],\n  measure_date_30d: d30.toISOString().split('T')[0],\n  measure_date_60d: d60.toISOString().split('T')[0],\n  attribution_status: 'deployed',\n  pagerank_top5: JSON.stringify(data.pagerank_top5 || []),\n  delta_impact: null,\n  verdict: 'pending'\n};\n\nreturn [{ json: { ...data, attribution_snapshot: snapshot }}];"
+      },
+      "id": "attribution-snap-01",
+      "name": "Attribution Snapshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3220, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOCODB_URL || 'http://nocodb:8080' }}/api/v1/db/data/noco/{{ $env.NOCODB_BASE || 'ppxzhw4b32456e0' }}/{{ $env.TABLE_ATTRIBUTION || 'attribution_log' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.attribution_snapshot) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "save-attribution-01",
+      "name": "Save Attribution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3480, 160],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "={{ $env.NOCODB_URL || 'http://nocodb:8080' }}/api/v1/db/data/bulk/noco/{{ $env.NOCODB_BASE || 'ppxzhw4b32456e0' }}/{{ $env.TABLE_INTERNAL_LINKS || 'mrovdz8mmvskhol' }}?where=(project_id,eq,{{ $('Build Links Prompt v4.0').first().json.project_id }})~and(status,neq,archived)",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"status\": \"archived\",\n  \"archived_at\": \"{{ new Date().toISOString() }}\"\n}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "soft-delete-01",
+      "name": "Soft Delete Old Links",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3740, 160],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// NocoDB Bulk Save v2.0 — батчинг по 100 записей\n// Устанавливает status из gate_decision\n// ═══════════════════════════════════════════════════\n\nconst data = $input.first().json;\nconst links = data.nocodb_payload || data.verified_links || [];\nconst gateStatus = data.gate_status || 'active';\n\n// Set status from Quality Gate\nconst linksWithStatus = links.map(l => ({ ...l, status: gateStatus }));\n\n// Batch by 100\nconst batches = [];\nfor (let i = 0; i < linksWithStatus.length; i += 100) {\n  batches.push(linksWithStatus.slice(i, i + 100));\n}\n\nreturn [{ json: {\n  ...data,\n  save_batches: batches,\n  total_batches: batches.length,\n  current_batch: 0\n}}];"
+      },
+      "id": "prep-save-01",
+      "name": "Prepare Save Batches",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4000, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOCODB_URL || 'http://nocodb:8080' }}/api/v1/db/data/bulk/noco/{{ $env.NOCODB_BASE || 'ppxzhw4b32456e0' }}/{{ $env.TABLE_INTERNAL_LINKS || 'mrovdz8mmvskhol' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.save_batches[0] || $json.nocodb_payload || $json.verified_links || []) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "options": {}
+      },
+      "id": "nocodb-save-01",
+      "name": "NocoDB Bulk Save",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4260, 160],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"bge-m3\",\n  \"prompt\": {{ JSON.stringify(\n    'Перелинковка ' +\n    $('Build Links Prompt v4.0').first().json.niche + ' ' +\n    $('Build Links Prompt v4.0').first().json.city + ' ' +\n    $('Build Links Prompt v4.0').first().json.niche_cluster + ' ' +\n    'ссылок:' + ($('Parse & Validate Links v2').first().json.links_count || 0) +\n    ' типы:' + Object.keys($('Parse & Validate Links v2').first().json.type_distribution || {}).join(',') +\n    ' кластеров:' + ($('Build Links Prompt v4.0').first().json.clusters_count || 0) +\n    ' QC:' + ($('Parse & Validate Links v2').first().json.qc_score || 0) +\n    ' engines:' + ($('Build Links Prompt v4.0').first().json.priority_engines || 'both')\n  ) }}\n}"
+      },
+      "id": "embed-summary-01",
+      "name": "Embed Summary v2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4260, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "const batchInfo = $('Build Links Prompt v4.0').first().json;\nconst parseData = $('Parse & Validate Links v2').first().json;\nconst prData = $('PageRank Calculator').first().json;\nconst vector = $input.first().json.embedding;\nif (!vector || vector.length !== 1024) throw new Error('Invalid embedding dimension');\n\nconst pointId = crypto.randomUUID();\nconst payload = {\n  points: [{\n    id: pointId,\n    vector: vector,\n    payload: {\n      project_id: batchInfo.project_id,\n      niche: batchInfo.niche,\n      city: batchInfo.city,\n      niche_cluster: batchInfo.niche_cluster,\n      priority_engines: batchInfo.priority_engines,\n      type: 'internal_links_analysis',\n      links_count: parseData.links_count,\n      qc_score: parseData.qc_score,\n      hallucination_rate: parseFloat(parseData.hallucination_rate || 0),\n      type_distribution: parseData.type_distribution,\n      engine_distribution: parseData.engine_distribution,\n      pagerank_top3: (prData.pagerank_top5 || []).slice(0, 3),\n      version: 'v4.0',\n      created_at: new Date().toISOString()\n    }\n  }]\n};\nreturn [{ json: { qdrant_payload: payload }}];"
+      },
+      "id": "prep-qdrant-01",
+      "name": "Prepare Qdrant Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4520, 400]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/internal_links_history/points",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.qdrant_payload) }}"
+      },
+      "id": "save-qdrant-01",
+      "name": "Save to Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [4780, 400],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// Build Response v2.0 — SP v4.0 compliant\n// PageRank · Attribution · [Я]/[G] stats · ML score\n// ═══════════════════════════════════════════════════\n\nconst parseData = $('Parse & Validate Links v2').first().json;\nconst batchInfo = $('Build Links Prompt v4.0').first().json;\nconst ragInfo = $('Format RAG Context v2').first().json;\nconst prData = $('PageRank Calculator').first().json;\nconst gateData = $('Quality Gate Logic').first().json;\n\nlet qdrantOk = true, nocodbOk = true, attrOk = true;\ntry {\n  const qRes = $('Save to Qdrant').first().json;\n  qdrantOk = qRes.result?.status === 'acknowledged' || qRes.status === 'ok';\n} catch(e) { qdrantOk = false; }\ntry {\n  const nRes = $('NocoDB Bulk Save').first().json;\n  nocodbOk = nRes?.length > 0 || nRes?.Id != null;\n} catch(e) { nocodbOk = false; }\ntry {\n  $('Save Attribution').first().json;\n} catch(e) { attrOk = false; }\n\n// Top links preview\nconst topLinks = (parseData.nocodb_payload || []).slice(0, 10).map(l =>\n  `[${l.engine_tag}] ${l.from_url} →[${l.link_type}]→ ${l.to_url} \"${l.anchor}\"`\n).join('\\n');\n\nreturn [{ json: {\n  status: parseData.error ? 'error' : gateData.gate_decision === 'reject' ? 'rejected' : 'success',\n  step: '07_internal_links',\n  project_id: batchInfo.project_id,\n  niche: batchInfo.niche,\n  city: batchInfo.city,\n  niche_cluster: batchInfo.niche_cluster,\n  priority_engines: batchInfo.priority_engines,\n  cms: batchInfo.cms,\n\n  // === Links Stats ===\n  links_count: parseData.links_count,\n  groq_tokens: parseData.groq_tokens,\n  pages_analyzed: batchInfo.pages_count,\n  clusters_count: batchInfo.clusters_count,\n\n  // === Quality ===\n  qc_score: parseData.qc_score,\n  ml_score: gateData.ml_score || null,\n  combined_score: gateData.combined_score,\n  gate_decision: gateData.gate_decision,\n  gate_status: gateData.gate_status,\n  gate_reasons: gateData.gate_reasons,\n  issues: parseData.issues,\n\n  // === URL Verification ===\n  hallucinated_count: parseData.hallucinated_links?.length || 0,\n  hallucination_rate: parseData.hallucination_rate + '%',\n\n  // === PageRank ===\n  pagerank_top5: prData.pagerank_top5 || [],\n  pagerank_leaks: prData.pagerank_leaks || [],\n  pagerank_leak_warning: prData.pagerank_leak_warning,\n  pagerank_concentration: prData.pagerank_concentration + '%',\n\n  // === Graph Stats ===\n  graph_stats: parseData.graph_stats,\n  orphan_check: parseData.orphan_check,\n  type_distribution: parseData.type_distribution,\n  engine_distribution: parseData.engine_distribution,\n  reciprocal_ratio: parseData.reciprocal_ratio,\n\n  // === RAG Sources ===\n  rag_sources: {\n    personas: ragInfo.rag_persona_sources,\n    structures: ragInfo.rag_struct_sources,\n    history: ragInfo.rag_history_sources,\n    backlinks: ragInfo.has_backlink_data\n  },\n\n  // === Storage Status ===\n  storage: {\n    qdrant: qdrantOk,\n    nocodb: nocodbOk,\n    attribution: attrOk\n  },\n\n  // === Attribution ===\n  attribution: gateData.attribution_snapshot ? {\n    snapshot_date: gateData.attribution_snapshot.snapshot_date,\n    measure_dates: {\n      d14: gateData.attribution_snapshot.measure_date_14d,\n      d30: gateData.attribution_snapshot.measure_date_30d,\n      d60: gateData.attribution_snapshot.measure_date_60d\n    },\n    status: 'deployed'\n  } : null,\n\n  // === Preview ===\n  top_links_preview: topLinks,\n  error: parseData.error || null,\n  version: 'v4.0_pro',\n  timestamp: new Date().toISOString()\n}}];"
+      },
+      "id": "build-response-01",
+      "name": "Build Response v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4780, 160]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "return-result-01",
+      "name": "Return Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [5040, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// Format Error — catches errors from onError outputs\n// ═══════════════════════════════════════════════════\n\nconst error = $input.first().json;\nconst projectId = (() => {\n  try { return $('Validate & Sanitize v2.0').first().json.project_id; }\n  catch(e) { return 'unknown'; }\n})();\n\nconst nodeName = (() => {\n  try { return error.node || error.pairedItem?.item || 'unknown'; }\n  catch(e) { return 'unknown'; }\n})();\n\nreturn [{ json: {\n  workflow: 'NN_07_Перелинковка_v4.0',\n  severity: 'critical',\n  error_message: error.message || JSON.stringify(error).substring(0, 500),\n  error_code: error.code || error.httpCode || null,\n  project_id: projectId,\n  node: nodeName,\n  timestamp: new Date().toISOString()\n}}];"
+      },
+      "id": "format-error-01",
+      "name": "Format Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [700, 800]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.ALERT_WEBHOOK_URL || 'http://localhost:5678/webhook/alerts' }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      },
+      "id": "alert-error-01",
+      "name": "Alert: Error",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 800],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ═══════════════════════════════════════════════════\n// Groq Error Handler\n// При ошибке Groq после retry — возвращаем structured error\n// ═══════════════════════════════════════════════════\n\nconst error = $input.first().json;\n\nreturn [{ json: {\n  error: {\n    message: 'Groq API failed after retries: ' + (error.message || JSON.stringify(error).substring(0, 300))\n  },\n  choices: [],\n  usage: { total_tokens: 0 }\n}}];"
+      },
+      "id": "groq-error-handler-01",
+      "name": "Groq Error Fallback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 580]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [{ "node": "Validate & Sanitize v2.0", "type": "main", "index": 0 }]
+      ]
+    },
+    "Cron Weekly Audit": {
+      "main": [
+        [{ "node": "Load Active Projects", "type": "main", "index": 0 }]
+      ]
+    },
+    "Load Active Projects": {
+      "main": [
+        [{ "node": "SplitInBatches", "type": "main", "index": 0 }]
+      ]
+    },
+    "SplitInBatches": {
+      "main": [
+        [{ "node": "Validate & Sanitize v2.0", "type": "main", "index": 0 }]
+      ]
+    },
+    "Validate & Sanitize v2.0": {
+      "main": [
+        [{ "node": "Get Query Embedding", "type": "main", "index": 0 }],
+        [{ "node": "Format Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Get Query Embedding": {
+      "main": [
+        [
+          { "node": "RAG seo_personas", "type": "main", "index": 0 },
+          { "node": "RAG page_structures", "type": "main", "index": 0 },
+          { "node": "RAG links_history", "type": "main", "index": 0 },
+          { "node": "Fetch Page Structures v2", "type": "main", "index": 0 },
+          { "node": "Fetch Backlinks", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "RAG seo_personas": {
+      "main": [
+        [{ "node": "Format RAG Context v2", "type": "main", "index": 0 }]
+      ]
+    },
+    "RAG page_structures": {
+      "main": [
+        [{ "node": "Format RAG Context v2", "type": "main", "index": 0 }]
+      ]
+    },
+    "RAG links_history": {
+      "main": [
+        [{ "node": "Format RAG Context v2", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Page Structures v2": {
+      "main": [
+        [{ "node": "Build Links Prompt v4.0", "type": "main", "index": 0 }]
+      ]
+    },
+    "Fetch Backlinks": {
+      "main": [
+        [{ "node": "Format RAG Context v2", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format RAG Context v2": {
+      "main": [
+        [{ "node": "Build Links Prompt v4.0", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Links Prompt v4.0": {
+      "main": [
+        [{ "node": "Groq Internal Links", "type": "main", "index": 0 }]
+      ]
+    },
+    "Groq Internal Links": {
+      "main": [
+        [{ "node": "Parse & Validate Links v2", "type": "main", "index": 0 }],
+        [{ "node": "Groq Error Fallback", "type": "main", "index": 0 }]
+      ]
+    },
+    "Groq Error Fallback": {
+      "main": [
+        [{ "node": "Parse & Validate Links v2", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse & Validate Links v2": {
+      "main": [
+        [{ "node": "PageRank Calculator", "type": "main", "index": 0 }]
+      ]
+    },
+    "PageRank Calculator": {
+      "main": [
+        [{ "node": "ML Link Value", "type": "main", "index": 0 }]
+      ]
+    },
+    "ML Link Value": {
+      "main": [
+        [{ "node": "Quality Gate Logic", "type": "main", "index": 0 }]
+      ]
+    },
+    "Quality Gate Logic": {
+      "main": [
+        [{ "node": "Quality Gate v2", "type": "main", "index": 0 }]
+      ]
+    },
+    "Quality Gate v2": {
+      "main": [
+        [
+          { "node": "Attribution Snapshot", "type": "main", "index": 0 },
+          { "node": "Embed Summary v2", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Alert: Quality Issue", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Alert: Quality Issue": {
+      "main": [
+        [{ "node": "Build Response v2", "type": "main", "index": 0 }]
+      ]
+    },
+    "Attribution Snapshot": {
+      "main": [
+        [{ "node": "Save Attribution", "type": "main", "index": 0 }]
+      ]
+    },
+    "Save Attribution": {
+      "main": [
+        [{ "node": "Soft Delete Old Links", "type": "main", "index": 0 }]
+      ]
+    },
+    "Soft Delete Old Links": {
+      "main": [
+        [{ "node": "Prepare Save Batches", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Save Batches": {
+      "main": [
+        [{ "node": "NocoDB Bulk Save", "type": "main", "index": 0 }]
+      ]
+    },
+    "NocoDB Bulk Save": {
+      "main": [
+        [{ "node": "Build Response v2", "type": "main", "index": 0 }]
+      ]
+    },
+    "Embed Summary v2": {
+      "main": [
+        [{ "node": "Prepare Qdrant Payload", "type": "main", "index": 0 }]
+      ]
+    },
+    "Prepare Qdrant Payload": {
+      "main": [
+        [{ "node": "Save to Qdrant", "type": "main", "index": 0 }]
+      ]
+    },
+    "Save to Qdrant": {
+      "main": [
+        [{ "node": "Build Response v2", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build Response v2": {
+      "main": [
+        [{ "node": "Return Result", "type": "main", "index": 0 }]
+      ]
+    },
+    "Format Error": {
+      "main": [
+        [{ "node": "Alert: Error", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "versionId": "v4.0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "seo-automation-v4"
+  },
+  "tags": [
+    { "name": "step_07" },
+    { "name": "SEO_v4.0" },
+    { "name": "PRO_v4.0" },
+    { "name": "ML" },
+    { "name": "RAG" },
+    { "name": "PageRank" },
+    { "name": "Attribution" }
+  ]
+}
