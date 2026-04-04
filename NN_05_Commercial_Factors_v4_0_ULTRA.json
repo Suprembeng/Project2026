@@ -1,0 +1,1245 @@
+{
+  "name": "NN_05_Коммерческие_Факторы_v4.0_ULTRA",
+  "nodes": [
+    {
+      "id": "ed0b0585-4c5d-423f-8e4c-868d81e12514",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1100,
+        200
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "commercial-factors-v4",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "68ee1d63-348a-4ade-b180-8c7302b70134"
+    },
+    {
+      "id": "86ff31f8-fc7c-4747-aa48-36b1fe596d1d",
+      "name": "Cron Monthly Audit",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -1100,
+        560
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "months",
+              "monthsInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b392cab0-6b22-4869-8556-46e8eced0866",
+      "name": "Fetch Active Projects",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -800,
+        560
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.NOCODB_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG }}/{{ $env.NOCODB_TABLE_PROJECTS }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "={{ $env.NOCODB_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "where",
+              "value": "(status,eq,active)"
+            },
+            {
+              "name": "fields",
+              "value": "project_id,niche,city,target_url,competitors,niche_cluster"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "f31ba35f-2df0-49ca-9761-ab7c37ce21ea",
+      "name": "Split Projects",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        560
+      ],
+      "parameters": {
+        "jsCode": "\nconst response = $input.first().json;\nconst rows = response.list || (Array.isArray(response) ? response : []);\n\nif (rows.length === 0) {\n  throw new Error('No active projects found in NocoDB');\n}\n\nreturn rows.map(r => ({\n  json: {\n    body: {\n      project_id: r.project_id,\n      niche: r.niche || '',\n      city: r.city || '',\n      target_url: r.target_url || '',\n      niche_cluster: r.niche_cluster || 'commercial_local',\n      competitors: typeof r.competitors === 'string'\n        ? r.competitors.split(',').map(s => s.trim()).filter(Boolean)\n        : (Array.isArray(r.competitors) ? r.competitors : []),\n      source: 'cron_monthly'\n    }\n  }\n}));\n"
+      }
+    },
+    {
+      "id": "90de3351-b792-46f7-8366-970d904bf05e",
+      "name": "Auth Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -800,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst input = $input.first().json;\nconst headers = input.headers || {};\nconst authHeader = headers.authorization || headers.Authorization || '';\nconst expectedToken = $env.WORKFLOW_API_KEY || '';\n\n// Dev mode: если токен не настроен, пропускаем проверку\nif (expectedToken && authHeader !== `Bearer ${expectedToken}`) {\n  // Возвращаем ошибку — Quality Gate перехватит\n  return [{ json: {\n    ...input,\n    _auth_failed: true,\n    _auth_error: 'Unauthorized: invalid or missing Bearer token'\n  }}];\n}\n\nreturn [{ json: { ...input, _auth_failed: false }}];\n"
+      }
+    },
+    {
+      "id": "23f161e5-1ff9-44de-a1a2-895992d553f8",
+      "name": "Validate Input v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -500,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst raw = $input.first().json;\n\n// Auth failure check (from webhook path)\nif (raw._auth_failed) {\n  return [{ json: {\n    _abort: true,\n    _abort_reason: raw._auth_error,\n    _abort_code: 401\n  }}];\n}\n\nconst body = raw.body || raw;\nconst { niche, city, project_id, target_url, competitors, niche_cluster } = body;\n\n// Strict validation\nconst errors = [];\nif (!niche || typeof niche !== 'string' || niche.trim().length < 2) errors.push('niche обязательно (мин. 2 символа)');\nif (!city || typeof city !== 'string') errors.push('city обязательно');\nif (!project_id) errors.push('project_id обязательно');\n\nif (errors.length > 0) {\n  return [{ json: {\n    _abort: true,\n    _abort_reason: 'Validation: ' + errors.join('; '),\n    _abort_code: 422\n  }}];\n}\n\n// Sanitize competitors\nlet competitorsList = [];\nif (Array.isArray(competitors) && competitors.length > 0) {\n  competitorsList = competitors\n    .filter(c => typeof c === 'string' && c.startsWith('http'))\n    .slice(0, 5); // max 5 для скорости\n}\n\n// Sanitize text inputs (anti prompt injection)\nconst sanitize = (s) => String(s || '').trim()\n  .replace(/[<>{}]/g, '')\n  .replace(/ignore\\s+(previous|all|above)/gi, '[FILTERED]')\n  .substring(0, 200);\n\n// Build semantic embedding query\nconst embedQuery = [\n  sanitize(niche),\n  sanitize(city),\n  'коммерческие факторы ранжирования',\n  'Яндекс Google',\n  'цены отзывы гарантии доверие конверсия',\n  'SEO 2026'\n].join(' ');\n\n// Determine niche cluster\nconst cluster = niche_cluster || 'commercial_local';\n\nreturn [{ json: {\n  niche: sanitize(niche),\n  city: sanitize(city),\n  project_id,\n  target_url: (target_url || '').trim(),\n  competitors: competitorsList,\n  has_competitors: competitorsList.length > 0,\n  niche_cluster: cluster,\n  embed_query: embedQuery,\n  started_at: new Date().toISOString(),\n  workflow_version: 'v4.0_ultra',\n  source: body.source || 'webhook',\n  _abort: false\n}}];\n"
+      }
+    },
+    {
+      "id": "1b99b715-b0e0-401a-b3ad-e21ac5e41806",
+      "name": "Check Abort",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "4a84f3dd-1054-42a6-9bb7-1027398de1a8",
+              "leftValue": "={{ $json._abort }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "0b57a59e-2b8b-457e-be36-89bb9ea83af7",
+      "name": "Build Abort Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -200,
+        500
+      ],
+      "parameters": {
+        "jsCode": "\nconst prev = $input.first().json;\nreturn [{ json: {\n  success: false,\n  workflow_version: 'v4.0_ultra',\n  error: prev._abort_reason || 'Unknown error',\n  http_status: prev._abort_code || 500,\n  timestamp: new Date().toISOString()\n}}];\n"
+      }
+    },
+    {
+      "id": "e8b61b5e-60e5-441d-86fe-47980bc0ebd3",
+      "name": "Return Abort",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        100,
+        500
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.http_status || 500 }}"
+        }
+      }
+    },
+    {
+      "id": "875899ef-9dba-41ad-bb24-39fe8e7e041a",
+      "name": "Get Query Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        100,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"bge-m3\",\"prompt\":\"{{ $json.embed_query }}\"}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "dc8ee532-3e17-41e9-bdc9-d109e8870390",
+      "name": "RAG seo_personas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/seo_personas/points/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"vector\":{{ JSON.stringify($json.embedding) }},\"limit\":3,\"with_payload\":true,\"score_threshold\":0.70}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "74b3b891-719e-4bd0-948b-67141d387542",
+      "name": "RAG page_structures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        160
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/top10_page_structures/points/search",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"vector\":{{ JSON.stringify($json.embedding) }},\"limit\":3,\"with_payload\":true,\"score_threshold\":0.70}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "892c245a-6681-4ff3-a9f9-b0e40775f8da",
+      "name": "Fetch Page Structures",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        320
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.NOCODB_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG }}/{{ $env.NOCODB_TABLE_PAGES }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "={{ $env.NOCODB_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "where",
+              "value": "=(project_id,eq,{{ $('Validate Input v2').first().json.project_id }})"
+            },
+            {
+              "name": "limit",
+              "value": "100"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "dfacd345-5a0f-4a14-b511-4a972dedb5f1",
+      "name": "Fetch EEAT Score",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        420,
+        480
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.NOCODB_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG }}/{{ $env.NOCODB_TABLE_EEAT }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "={{ $env.NOCODB_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "where",
+              "value": "=(project_id,eq,{{ $('Validate Input v2').first().json.project_id }})"
+            },
+            {
+              "name": "limit",
+              "value": "1"
+            },
+            {
+              "name": "sort",
+              "value": "-created"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "f2189282-5a3d-4ef9-ae3f-698b424bca43",
+      "name": "Merge All Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        740,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst validated = $('Validate Input v2').first().json;\n\n// ── RAG personas ──\nlet personaResults = [];\ntry { personaResults = $('RAG seo_personas').first().json.result || []; } catch(e) {}\n\n// ── RAG structures ──\nlet structResults = [];\ntry { structResults = $('RAG page_structures').first().json.result || []; } catch(e) {}\n\n// ── Page structures from NocoDB ──\nlet pages = [];\ntry {\n  const resp = $('Fetch Page Structures').first().json;\n  pages = resp.list || (Array.isArray(resp) ? resp : []);\n} catch(e) {}\n\n// ── EEAT Score ──\nlet eeatScore = null;\ntry {\n  const resp = $('Fetch EEAT Score').first().json;\n  const rows = resp.list || (Array.isArray(resp) ? resp : []);\n  if (rows.length > 0) eeatScore = rows[0];\n} catch(e) {}\n\n// ── RAG Quality Gate: фильтруем низко-релевантные результаты ──\nconst qualityPersonas = personaResults.filter(r => {\n  const score = r.score || 0;\n  const payload = r.payload || {};\n  // Проверяем и score, и niche совпадение\n  if (score < 0.70) return false;\n  if (payload.niche && validated.niche) {\n    const pNiche = String(payload.niche).toLowerCase();\n    const vNiche = validated.niche.toLowerCase();\n    // Хотя бы частичное совпадение ниши\n    if (!pNiche.includes(vNiche.substring(0,4)) && !vNiche.includes(pNiche.substring(0,4))) {\n      return score >= 0.85; // Только при очень высоком score\n    }\n  }\n  return true;\n});\n\nconst qualityStructs = structResults.filter(r => {\n  if ((r.score || 0) < 0.70) return false;\n  if (r.payload?.type === 'commercial_factors_analysis') return false;\n  return true;\n});\n\n// ── Build RAG context ──\nlet personaContext = '';\nif (qualityPersonas.length > 0) {\n  personaContext = '=== ЦЕЛЕВАЯ АУДИТОРИЯ (RAG, quality-filtered) ===\\n\\n';\n  qualityPersonas.forEach((r, i) => {\n    const p = r.payload || {};\n    const score = Math.round(r.score * 100);\n    personaContext += `Персона ${i+1} (релевантность: ${score}%): `;\n    if (p.persona_name) personaContext += p.persona_name + ' | ';\n    if (p.pain_points) personaContext += 'Боли: ' + (typeof p.pain_points === 'string' ? p.pain_points : JSON.stringify(p.pain_points).substring(0, 400));\n    if (p.buying_triggers) personaContext += ' | Триггеры: ' + String(p.buying_triggers).substring(0, 200);\n    personaContext += '\\n';\n  });\n} else {\n  personaContext = '(Персоны не найдены в RAG или не прошли quality gate)\\n';\n}\n\nlet structContext = '';\nif (qualityStructs.length > 0) {\n  structContext = '\\n=== РЕЛЕВАНТНЫЕ ПРОЕКТЫ (RAG, quality-filtered) ===\\n\\n';\n  qualityStructs.forEach((r, i) => {\n    const p = r.payload || {};\n    const score = Math.round(r.score * 100);\n    structContext += `Проект ${i+1} (сходство: ${score}%): Ниша: ${p.niche || ''} | Город: ${p.city || ''}\\n`;\n    if (p.factors_summary) structContext += '  Факторы: ' + String(p.factors_summary).substring(0, 500) + '\\n';\n  });\n}\n\n// ── Pages context ──\nlet pagesContext = '';\nif (pages.length > 0) {\n  pagesContext = '\\n=== СТРУКТУРЫ СТРАНИЦ ПРОЕКТА ===\\n\\n';\n  pages.forEach((r, i) => {\n    pagesContext += `${i+1}. [${(r.page_type||'').toUpperCase()}] ${r.cluster_name||''} | URL: ${r.recommended_url||''} | Блоков: ${r.total_blocks||0}`;\n    if (r.has_price_block) pagesContext += ' | ✓ Прайс';\n    if (r.has_reviews) pagesContext += ' | ✓ Отзывы';\n    if (r.has_contacts) pagesContext += ' | ✓ Контакты';\n    pagesContext += '\\n';\n  });\n}\n\n// ── EEAT context ──\nlet eeatContext = '';\nif (eeatScore) {\n  eeatContext = `\\n=== E-E-A-T SCORE (из workflow #06) ===\\n`;\n  eeatContext += `Experience: ${eeatScore.experience_score || 'N/A'} | `;\n  eeatContext += `Expertise: ${eeatScore.expertise_score || 'N/A'} | `;\n  eeatContext += `Authority: ${eeatScore.authority_score || 'N/A'} | `;\n  eeatContext += `Trust: ${eeatScore.trust_score || 'N/A'} | `;\n  eeatContext += `Overall: ${eeatScore.overall_score || 'N/A'}\\n`;\n}\n\nreturn [{ json: {\n  ...validated,\n  rag_context: personaContext + structContext + eeatContext,\n  rag_persona_count: qualityPersonas.length,\n  rag_struct_count: qualityStructs.length,\n  rag_raw_persona_count: personaResults.length,\n  rag_raw_struct_count: structResults.length,\n  rag_quality_filtered: (personaResults.length - qualityPersonas.length) + (structResults.length - qualityStructs.length),\n  pages: pages,\n  pages_count: pages.length,\n  pages_context: pagesContext,\n  eeat_score: eeatScore,\n  eeat_available: !!eeatScore\n}}];\n"
+      }
+    },
+    {
+      "id": "7bd43ef5-86ac-474f-88d2-4956dc277d36",
+      "name": "Prepare Competitor Requests",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst ctx = $input.first().json;\nconst competitors = ctx.competitors || [];\n\nif (competitors.length === 0) {\n  // Нет конкурентов — пропускаем с пустой матрицей\n  return [{ json: {\n    ...ctx,\n    _comp_url: '',\n    _comp_skip: true\n  }}];\n}\n\n// Создаём по одному item на каждого конкурента\n// HTTP Request обработает каждый по очереди\nreturn competitors.map((url, i) => ({\n  json: {\n    ...ctx,\n    _comp_url: url,\n    _comp_index: i,\n    _comp_skip: false\n  }\n}));\n"
+      }
+    },
+    {
+      "id": "d5112986-5f9f-49d7-8121-8eb143e20011",
+      "name": "Fetch Competitor HTML",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1360,
+        200
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json._comp_url }}",
+        "options": {
+          "timeout": 15000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": true,
+              "maxRedirects": 3
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "b787d337-ef56-4292-b3c3-db4dab64c5bb",
+      "name": "Build Competitor CF Matrix",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst items = $input.all();\nconst ctx = items[0].json;\n\n// Если конкуренты были пропущены\nif (ctx._comp_skip) {\n  return [{ json: {\n    ...ctx,\n    competitor_matrix: [],\n    competitor_cf_coverage: {},\n    competitors_analyzed: 0,\n    has_competitor_data: false,\n    competitor_context: '(Конкуренты не указаны)\\n'\n  }}];\n}\n\nconst matrix = [];\nfor (const item of items) {\n  const url = item.json._comp_url || '';\n  const html = String(item.json.data || item.json.body || '').toLowerCase();\n\n  if (!html || html.length < 100) {\n    matrix.push({ url, error: 'fetch_failed', cf_count: 0 });\n    continue;\n  }\n\n  const cf = {\n    url,\n    has_price: /цен[аы]|price|₽|руб[\\.\\s]|стоимость|прайс|тариф|рассрочк/i.test(html),\n    has_phone: /\\+7|8[\\s\\-]?\\(?\\d{3}\\)?|tel:|phone/i.test(html),\n    has_email: /[\\w.\\-]+@[\\w.\\-]+\\.[a-z]{2,}/i.test(html),\n    has_address: /адрес|address|проезд|метро|ул\\.|пр\\.|улица|проспект/i.test(html),\n    has_reviews: /отзыв|review|testimonial|рейтинг/i.test(html),\n    has_license: /лицензи|сертификат|license|certificate|свидетельств/i.test(html),\n    has_guarantee: /гарант|warranty|guarantee|возврат/i.test(html),\n    has_portfolio: /портфолио|portfolio|наши работы|примеры|кейс|до и после|фото работ/i.test(html),\n    has_faq: /faq|вопрос.*ответ|частые вопросы|частый вопрос/i.test(html),\n    has_schema: /application\\/ld\\+json|itemtype|itemscope/i.test(html),\n    has_callback: /callback|обратный звонок|заказать звонок|перезвон/i.test(html),\n    has_chat: /whatsapp|telegram|viber|messenger|онлайн.?консультант|jivosite|carrot/i.test(html),\n    has_map: /yandex.*map|google.*map|2gis|карта проезда|яндекс.*карт/i.test(html),\n    has_team: /команд[аы]|специалист|врач[ие]|наши врачи|staff|team/i.test(html),\n    has_legal: /полити[кч]а конфиденциальности|оферт|пользовательское соглашен|privacy/i.test(html),\n    has_payment: /оплат|payment|visa|mastercard|мир\\b|рассрочк|кредит|долями/i.test(html),\n    has_schedule: /расписан|режим работы|график|часы работы|working hours|пн|вт|ср|чт|пт/i.test(html)\n  };\n\n  cf.cf_count = Object.entries(cf).filter(([k,v]) => k.startsWith('has_') && v === true).length;\n  matrix.push(cf);\n}\n\n// Coverage: сколько конкурентов имеют каждый КФ\nconst cfTypes = Object.keys(matrix[0] || {}).filter(k => k.startsWith('has_'));\nconst coverage = {};\nconst validMatrix = matrix.filter(m => !m.error);\n\ncfTypes.forEach(cf => {\n  const withCf = validMatrix.filter(m => m[cf]).length;\n  coverage[cf] = {\n    competitors_with: withCf,\n    total: validMatrix.length,\n    ratio: validMatrix.length ? +(withCf / validMatrix.length).toFixed(2) : 0,\n    label: cf.replace('has_', ''),\n    critical: withCf / Math.max(validMatrix.length, 1) >= 0.6 // У 60%+ конкурентов → критично для нас\n  };\n});\n\n// Build human-readable context for prompt\nlet compContext = '\\n=== РЕАЛЬНЫЕ КФ КОНКУРЕНТОВ (парсинг HTML) ===\\n\\n';\nvalidMatrix.forEach((c, i) => {\n  const present = Object.entries(c)\n    .filter(([k,v]) => k.startsWith('has_') && v === true)\n    .map(([k]) => k.replace('has_', ''))\n    .join(', ');\n  compContext += `Конкурент ${i+1} (${c.url}): ${present} [${c.cf_count} КФ]\\n`;\n});\n\nconst criticalGaps = Object.values(coverage)\n  .filter(c => c.critical)\n  .map(c => c.label);\n\nif (criticalGaps.length > 0) {\n  compContext += `\\n⚠ КФ ЕСТЬ У 60%+ КОНКУРЕНТОВ (критично внедрить): ${criticalGaps.join(', ')}\\n`;\n}\n\n// Restore original context (first item has all data)\nconst baseCtx = items[0].json;\n\nreturn [{ json: {\n  niche: baseCtx.niche,\n  city: baseCtx.city,\n  project_id: baseCtx.project_id,\n  target_url: baseCtx.target_url,\n  competitors: baseCtx.competitors,\n  has_competitors: baseCtx.has_competitors,\n  niche_cluster: baseCtx.niche_cluster,\n  embed_query: baseCtx.embed_query,\n  started_at: baseCtx.started_at,\n  workflow_version: baseCtx.workflow_version,\n  source: baseCtx.source,\n  rag_context: baseCtx.rag_context,\n  rag_persona_count: baseCtx.rag_persona_count,\n  rag_struct_count: baseCtx.rag_struct_count,\n  pages: baseCtx.pages,\n  pages_count: baseCtx.pages_count,\n  pages_context: baseCtx.pages_context,\n  eeat_score: baseCtx.eeat_score,\n  eeat_available: baseCtx.eeat_available,\n  competitor_matrix: matrix,\n  competitor_cf_coverage: coverage,\n  competitors_analyzed: validMatrix.length,\n  competitors_failed: matrix.filter(m => m.error).length,\n  has_competitor_data: validMatrix.length > 0,\n  competitor_context: compContext,\n  competitor_critical_gaps: criticalGaps\n}}];\n"
+      }
+    },
+    {
+      "id": "c23b3bc5-865c-4bad-b6c0-0b318cc749cb",
+      "name": "Build CF Prompt v4.0",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst ctx = $input.first().json;\n\n// ── Niche cluster specific hints ──\nconst clusterHints = {\n  commercial_local: `[Я] КФ, ПФ, Local SEO — главные приоритеты для локального бизнеса.\n[Я] Яндекс.Бизнес, 2GIS, карты — обязательно. ИКС зависит от КФ напрямую.\n[G] Google Business Profile, LocalBusiness schema, click-to-call.\n[ОБА] Цены, контакты, отзывы, гарантии — топ-факторы.`,\n\n  ecom: `[ОБА] Ассортимент — МУЛЬТИПЛИКАТОР в формуле КФ. Без него всё обнуляется.\n[Я] Фильтры, Product schema, наличие на складе, варианты доставки.\n[G] Product/Offer schema, MerchantReturnPolicy, ShippingDetails.\nКаннибализация: проверить пересечение семантики между страницами.`,\n\n  saas: `[G] GEO/AEO приоритет. AI Overviews — главная угроза.\n[ОБА] Blog pipeline, Entity SEO, Wikidata.\nМеждународное SEO, hreflang, мультиязычность.`,\n\n  info: `[ОБА] E-E-A-T авторов — критично. YMYL-требования.\n[ОБА] Content Decay мониторинг. Частота обновлений.\n[G] HCU compliance — anti-AI-spam.`,\n\n  commercial_national: `[ОБА] Ссылочный профиль + E-E-A-T — главные драйверы.\n[G] Featured Snippets, SERP features — оптимизация обязательна.\n[Я] ПФ: CTR + dwell time + bounce — 45% формулы ранжирования.`\n};\n\nconst clusterCtx = clusterHints[ctx.niche_cluster] || clusterHints.commercial_local;\n\n// ── EEAT context ──\nlet eeatBlock = '';\nif (ctx.eeat_available && ctx.eeat_score) {\n  const e = ctx.eeat_score;\n  eeatBlock = `\\n## ТЕКУЩИЙ E-E-A-T SCORE (из аудита workflow #06)\nExperience: ${e.experience_score || 'N/A'}/10 | Expertise: ${e.expertise_score || 'N/A'}/10\nAuthority: ${e.authority_score || 'N/A'}/10 | Trust: ${e.trust_score || 'N/A'}/10\n→ Учитывай при приоритизации: если Trust низкий — КФ доверия в priority 1.\\n`;\n}\n\n// ── Competitor data ──\nconst compContext = ctx.has_competitor_data\n  ? ctx.competitor_context\n  : '(Данные конкурентов недоступны — рекомендации на основе лучших практик ниши)\\n';\n\nconst systemPrompt = `Ты Senior SEO-аудитор с 10+ лет опыта в коммерческом SEO (Яндекс и Google). Год: 2026.\nФормат ответа: ТОЛЬКО валидный JSON. Ни одного символа вне JSON.\n\nРОЛЬ: Провести экспертный аудит коммерческих факторов ранжирования.\nПРОЕКТ: Ниша \"${ctx.niche}\" | Город: \"${ctx.city}\" | Кластер: ${ctx.niche_cluster}\n\n${ctx.rag_context}\n${ctx.pages_context}\n${compContext}\n${eeatBlock}\n\n## [Я] ФОРМУЛА КОММЕРЧЕСКОЙ РЕЛЕВАНТНОСТИ ЯНДЕКСА (2026)\nКР = Ассортимент × (2×Надёжность + Удобство + Дизайн + 2×Сервис)\nВАЖНО:\n- Ассортимент — МУЛЬТИПЛИКАТОР. Без ассортимента/цен всё обнуляется.\n- Надёжность (лицензии, реквизиты, отзывы) и Сервис (контакты, доставка, гарантии) имеют ДВОЙНОЙ вес.\n- ПФ весят 45% в формуле ранжирования Яндекса (2026).\n\n## [G] GOOGLE — E-E-A-T + CWV + HCU (2026)\n- E-E-A-T: реальный опыт автора, экспертиза, авторитетность, доверие\n- Structured Data: LocalBusiness, Service, FAQPage, PriceSpecification, Speakable\n- AI Overviews / SGE: GEO-оптимизация обязательна — cite-friendly факты\n\n## СПЕЦИФИКА КЛАСТЕРА: ${ctx.niche_cluster}\n${clusterCtx}\n\n## КЛАССИФИКАЦИЯ КОММЕРЧЕСКИХ ФАКТОРОВ\n### Яндекс-специфичные:\n- price: Прайс-лист, таблица цен, калькулятор, рассрочка/кредит\n- contact: Телефон, адрес, email, мессенджеры, карта, режим работы, callback\n- trust: Сертификаты, лицензии, ИНН/ОГРН, членства, партнёры, награды\n- review: Отзывы клиентов, рейтинги, кейсы до/после, видеоотзывы\n- guarantee: Гарантии, возврат, сервис, страхование\n- portfolio: Портфолио, фото работ, кейсы, примеры\n- conversion: Формы, онлайн-запись, callback, CTA-блоки, квиз\n- legal: Политика конфиденциальности, оферта, реквизиты\n- delivery: Доставка, самовывоз, логистика (если применимо)\n- team: Команда, специалисты, опыт, фото, регалии\n\n### Google-специфичные:\n- schema: Structured Data (LocalBusiness, Service, FAQPage, PriceSpecification, Speakable)\n- content: Breadcrumbs, FAQ, HowTo, экспертный контент\n\n### AEO/GEO (2026):\n- aeo: FAQ с прямыми ответами, Speakable, цитируемая статистика, entity-факты\n\n## ПРИМЕР (ниша: стоматология, Москва, commercial_local):\n{\n  \"commercial_factors\": [\n    {\n      \"factor_name\": \"Прайс-лист с ценами на все направления\",\n      \"factor_type\": \"price\",\n      \"description\": \"Детальная таблица цен по направлениям: терапия, ортодонтия, имплантация, хирургия. Калькулятор стоимости лечения. У 4/5 конкурентов есть прайс — это МУЛЬТИПЛИКАТОР в формуле КФ Яндекса.\",\n      \"priority\": 1,\n      \"search_engine\": \"yandex\",\n      \"implementation_hint\": \"Страница /prices + фильтр по направлениям + Schema PriceSpecification на каждую услугу\",\n      \"expected_impact\": \"high\",\n      \"yandex_formula_component\": \"assortment\",\n      \"competitor_gap\": true\n    },\n    {\n      \"factor_name\": \"Google Business Profile — полная оптимизация\",\n      \"factor_type\": \"contact\",\n      \"description\": \"Заполнить все поля GBP: часы работы, фото клиники, услуги, атрибуты. Отвечать на отзывы. Публиковать Google Posts еженедельно.\",\n      \"priority\": 1,\n      \"search_engine\": \"google\",\n      \"implementation_hint\": \"GBP Manager + weekly posts + review response SOP\",\n      \"expected_impact\": \"high\",\n      \"yandex_formula_component\": \"n/a\",\n      \"competitor_gap\": false\n    }\n  ],\n  \"summary\": {\n    \"total_factors\": 2,\n    \"critical_count\": 2,\n    \"yandex_critical\": 1,\n    \"google_critical\": 1,\n    \"top3_quick_wins\": [\"Прайс-лист с ценами на все направления\"],\n    \"cf_formula_assessment\": {\n      \"assortment\": \"missing\",\n      \"trust\": \"partial\",\n      \"service\": \"partial\",\n      \"usability\": \"needs_improvement\",\n      \"design\": \"acceptable\"\n    }\n  }\n}\n\n## ПРАВИЛА\n1. Анализируй КОНКРЕТНО для ниши \"${ctx.niche}\" — не абстрактно\n2. Каждая рекомендация — actionable (что именно сделать)\n3. priority: 1=критично, 2=важно, 3=желательно, 4=опционально, 5=перспектива\n4. Не дублируй факторы — каждый уникален\n5. search_engine: \"yandex\" | \"google\" | \"both\" — НЕ СТАВЬ \"both\" по умолчанию\n6. [Я]-специфичные: priority 1-2 для КФ с двойным весом (Надёжность, Сервис)\n7. Если есть данные конкурентов — отмечай competitor_gap: true/false\n8. yandex_formula_component: \"assortment\" | \"trust\" | \"service\" | \"usability\" | \"design\" | \"n/a\"\n\n## JSON SCHEMA (строго следуй):\n{\n  \"commercial_factors\": [\n    {\n      \"factor_name\": \"string\",\n      \"factor_type\": \"price|contact|trust|review|guarantee|portfolio|conversion|legal|delivery|team|schema|content|aeo\",\n      \"description\": \"string — конкретная рекомендация для ниши ${ctx.niche}\",\n      \"priority\": \"number 1-5\",\n      \"search_engine\": \"yandex|google|both\",\n      \"implementation_hint\": \"string\",\n      \"expected_impact\": \"high|medium|low\",\n      \"yandex_formula_component\": \"assortment|trust|service|usability|design|n/a\",\n      \"competitor_gap\": \"boolean\"\n    }\n  ],\n  \"summary\": {\n    \"total_factors\": \"number\",\n    \"critical_count\": \"number\",\n    \"yandex_critical\": \"number\",\n    \"google_critical\": \"number\",\n    \"top3_quick_wins\": [\"string\"],\n    \"cf_formula_assessment\": {\n      \"assortment\": \"missing|partial|complete\",\n      \"trust\": \"missing|partial|complete\",\n      \"service\": \"missing|partial|complete\",\n      \"usability\": \"missing|partial|complete\",\n      \"design\": \"missing|partial|complete\"\n    }\n  }\n}`;\n\nconst userPrompt = `Проведи аудит коммерческих факторов для проекта.\nНиша: ${ctx.niche}\nГород: ${ctx.city}\nКластер: ${ctx.niche_cluster}\nСтраниц: ${ctx.pages_count}\nКонкурентов проанализировано: ${ctx.competitors_analyzed || 0}\nE-E-A-T данные: ${ctx.eeat_available ? 'доступны' : 'нет'}\n\nВыдай от 18 до 35 факторов, отсортированных по priority (от 1 к 5).\nОБЯЗАТЕЛЬНО: минимум 3 фактора с search_engine=\"yandex\", минимум 3 с \"google\", минимум 2 с \"aeo\".\nЕсли есть данные конкурентов — обязательно отметь competitor_gap.\nОтвет — ТОЛЬКО JSON.`;\n\nconst payload = {\n  model: 'llama-3.3-70b-versatile',\n  max_tokens: 8192,\n  temperature: 0.15,\n  top_p: 0.85,\n  response_format: { type: \"json_object\" },\n  messages: [\n    { role: 'system', content: systemPrompt },\n    { role: 'user', content: userPrompt }\n  ]\n};\n\nreturn [{ json: {\n  groq_payload: payload,\n  batch_info: {\n    project_id: ctx.project_id,\n    niche: ctx.niche,\n    city: ctx.city,\n    target_url: ctx.target_url,\n    niche_cluster: ctx.niche_cluster,\n    competitors_analyzed: ctx.competitors_analyzed || 0,\n    eeat_available: ctx.eeat_available,\n    source: ctx.source,\n    started_at: ctx.started_at\n  },\n  competitor_data: {\n    matrix: ctx.competitor_matrix || [],\n    coverage: ctx.competitor_cf_coverage || {},\n    critical_gaps: ctx.competitor_critical_gaps || []\n  },\n  pages_count: ctx.pages_count,\n  rag_stats: {\n    personas: ctx.rag_persona_count,\n    structures: ctx.rag_struct_count,\n    quality_filtered: ctx.rag_quality_filtered || 0\n  }\n}}];\n"
+      }
+    },
+    {
+      "id": "f8db109a-2f4b-4f5d-87dd-6d13f14291e1",
+      "name": "Groq CF Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2260,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.GROQ_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.groq_payload }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "4b0ec913-3c5d-49ce-aaf4-46a494ee153a",
+      "name": "Parse CF Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst groqResponse = $input.first().json;\nconst batchInfo = $('Build CF Prompt v4.0').first().json.batch_info;\n\nif (groqResponse.error) {\n  const errMsg = groqResponse.error.message || JSON.stringify(groqResponse.error);\n  return [{ json: {\n    success: false,\n    factors_count: 0,\n    factors: [],\n    nocodb_payload: [],\n    error: 'Groq API error: ' + errMsg,\n    groq_tokens: 0,\n    batch_info: batchInfo\n  }}];\n}\n\nconst rawContent = groqResponse?.choices?.[0]?.message?.content || '';\nconst tokens = groqResponse?.usage?.total_tokens || 0;\nconst finishReason = groqResponse?.choices?.[0]?.finish_reason || 'unknown';\n\n// Parse JSON\nlet parsed;\ntry {\n  parsed = JSON.parse(rawContent);\n} catch (err) {\n  const cleaned = rawContent.replace(/```json\\s*/gi, '').replace(/```\\s*/gi, '').trim();\n  try {\n    parsed = JSON.parse(cleaned);\n  } catch(e2) {\n    return [{ json: {\n      success: false,\n      factors_count: 0,\n      factors: [],\n      nocodb_payload: [],\n      error: 'JSON parse failed: ' + err.message + '. Raw[0:500]: ' + rawContent.substring(0, 500),\n      groq_tokens: tokens,\n      batch_info: batchInfo\n    }}];\n  }\n}\n\n// Normalize\nif (Array.isArray(parsed)) parsed = { commercial_factors: parsed, summary: null };\nif (!parsed.commercial_factors && parsed.factor_name) parsed = { commercial_factors: [parsed], summary: null };\n\nconst validTypes = ['price','contact','trust','review','legal','conversion','content','aeo','guarantee','portfolio','delivery','team','schema'];\nconst validEngines = ['yandex','google','both'];\nconst validImpact = ['high','medium','low'];\nconst validFormula = ['assortment','trust','service','usability','design','n/a'];\n\nconst factors = (parsed.commercial_factors || []).map((f, idx) => ({\n  project_id: batchInfo.project_id,\n  niche: batchInfo.niche,\n  city: batchInfo.city,\n  niche_cluster: batchInfo.niche_cluster,\n  factor_name: (f.factor_name || 'Фактор ' + (idx+1)).substring(0, 200),\n  factor_type: validTypes.includes(f.factor_type) ? f.factor_type : 'content',\n  description: (f.description || '').substring(0, 2000),\n  priority: Math.min(Math.max(parseInt(f.priority) || 3, 1), 5),\n  search_engine: validEngines.includes(f.search_engine) ? f.search_engine : 'both',\n  implementation_hint: (f.implementation_hint || '').substring(0, 500),\n  expected_impact: validImpact.includes(f.expected_impact) ? f.expected_impact : 'medium',\n  yandex_formula_component: validFormula.includes(f.yandex_formula_component) ? f.yandex_formula_component : 'n/a',\n  competitor_gap: !!f.competitor_gap,\n  status: 'pending',\n  created: new Date().toISOString(),\n  workflow_version: 'v4.0'\n}));\n\n// Validate minimum requirements\nconst warnings = [];\nconst yaFactors = factors.filter(f => f.search_engine === 'yandex').length;\nconst gFactors = factors.filter(f => f.search_engine === 'google').length;\nconst aeoFactors = factors.filter(f => f.factor_type === 'aeo').length;\nif (yaFactors < 3) warnings.push('[Я] факторов < 3 (получено: ' + yaFactors + ')');\nif (gFactors < 3) warnings.push('[G] факторов < 3 (получено: ' + gFactors + ')');\nif (aeoFactors < 2) warnings.push('AEO факторов < 2 (получено: ' + aeoFactors + ')');\n\nconst summary = parsed.summary || {\n  total_factors: factors.length,\n  critical_count: factors.filter(f => f.priority === 1).length,\n  yandex_critical: factors.filter(f => f.search_engine === 'yandex' && f.priority === 1).length,\n  google_critical: factors.filter(f => f.search_engine === 'google' && f.priority === 1).length,\n  top3_quick_wins: factors.filter(f => f.expected_impact === 'high').slice(0, 3).map(f => f.factor_name),\n  cf_formula_assessment: null\n};\n\nreturn [{ json: {\n  success: true,\n  factors_count: factors.length,\n  factors: factors,\n  nocodb_payload: factors,\n  summary: summary,\n  groq_tokens: tokens,\n  finish_reason: finishReason,\n  warnings: warnings,\n  error: null,\n  batch_info: batchInfo\n}}];\n"
+      }
+    },
+    {
+      "id": "75afeabd-8bb3-4a8f-bee7-cdb2988860c2",
+      "name": "Quality Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c6417220-657f-4a3d-99cd-d6a4ebd7c370",
+              "leftValue": "={{ $json.success }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals",
+                "singleValue": true
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b6f4c2b4-1777-4870-bf0f-cdfc7c49b9f1",
+      "name": "Build Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3160,
+        500
+      ],
+      "parameters": {
+        "jsCode": "\nconst prev = $input.first().json;\nconst batchInfo = prev.batch_info || {};\nconst startedAt = batchInfo.started_at;\nconst elapsed = startedAt ? ((new Date() - new Date(startedAt)) / 1000).toFixed(1) : 0;\n\nreturn [{ json: {\n  success: false,\n  workflow_version: 'v4.0_ultra',\n  execution_time_sec: parseFloat(elapsed),\n  error: prev.error || 'LLM failed: no factors returned',\n  factors_count: 0,\n  groq_tokens: prev.groq_tokens || 0,\n  metadata: {\n    niche: batchInfo.niche,\n    city: batchInfo.city,\n    project_id: batchInfo.project_id,\n    source: batchInfo.source\n  },\n  timestamp: new Date().toISOString()\n}}];\n"
+      }
+    },
+    {
+      "id": "b14771b8-ff73-4f14-9ccd-855ec01b86f3",
+      "name": "Log Error to NocoDB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3460,
+        500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOCODB_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG }}/{{ $env.NOCODB_TABLE_LOGS }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "={{ $env.NOCODB_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ workflow: \"05_cf\", version: \"v4.0\", status: \"error\", error: $json.error, project_id: $json.metadata?.project_id || \"\", timestamp: new Date().toISOString() }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "19b12b9d-5b52-4334-b721-630ee7168814",
+      "name": "Return Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        3760,
+        500
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $('Build Error Response').first().json }}",
+        "options": {
+          "responseCode": 422
+        }
+      }
+    },
+    {
+      "id": "4c46c120-45f9-4070-afdd-f4a23e1c05ef",
+      "name": "Dedup Delete Old",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3160,
+        40
+      ],
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ $env.NOCODB_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG }}/{{ $env.NOCODB_TABLE_CF }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "={{ $env.NOCODB_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "where",
+              "value": "=(project_id,eq,{{ $json.batch_info.project_id }})~and(workflow_version,eq,v4.0)"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "6084502d-d73e-4083-9c3f-464f014185b8",
+      "name": "NocoDB Upsert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3460,
+        40
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOCODB_URL }}/api/v1/db/data/bulk/noco/{{ $env.NOCODB_ORG }}/{{ $env.NOCODB_TABLE_CF }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "={{ $env.NOCODB_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($('Parse CF Response').first().json.nocodb_payload) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "dfb8d5fa-f7fe-40c4-8f60-0cce4f139e0d",
+      "name": "Prepare ML Features v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3160,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst cfInfo = $('Parse CF Response').first().json;\nconst compData = $('Build Competitor CF Matrix').first().json;\nconst factors = cfInfo.factors || [];\nconst batchInfo = cfInfo.batch_info || {};\n\nconst validTypes = ['price','contact','trust','review','legal','conversion','content','aeo','guarantee','portfolio','delivery','team','schema'];\n\n// ── Группировка по типам ──\nconst typeGroups = {};\nvalidTypes.forEach(t => { typeGroups[t] = []; });\nfactors.forEach(f => {\n  if (typeGroups[f.factor_type]) typeGroups[f.factor_type].push(f);\n});\n\n// ── Количественные фичи (не бинарные!) ──\nconst features = {};\n\n// Per-type count + avg priority\nvalidTypes.forEach(t => {\n  const group = typeGroups[t];\n  features[t + '_count'] = group.length;\n  features[t + '_avg_priority'] = group.length\n    ? +(group.reduce((s, f) => s + f.priority, 0) / group.length).toFixed(2)\n    : 0;\n  features[t + '_high_impact'] = group.filter(f => f.expected_impact === 'high').length;\n});\n\n// Aggregates\nfeatures.total_factors = factors.length;\nfeatures.critical_count = factors.filter(f => f.priority === 1).length;\nfeatures.high_impact_count = factors.filter(f => f.expected_impact === 'high').length;\nfeatures.type_diversity = new Set(factors.map(f => f.factor_type)).size;\nfeatures.avg_priority = factors.length\n  ? +(factors.reduce((s, f) => s + f.priority, 0) / factors.length).toFixed(2)\n  : 0;\n\n// Engine split [Я]/[G]\nfeatures.yandex_only = factors.filter(f => f.search_engine === 'yandex').length;\nfeatures.google_only = factors.filter(f => f.search_engine === 'google').length;\nfeatures.both_engines = factors.filter(f => f.search_engine === 'both').length;\nfeatures.yandex_critical = factors.filter(f =>\n  (f.search_engine === 'yandex' || f.search_engine === 'both') && f.priority === 1\n).length;\nfeatures.google_critical = factors.filter(f =>\n  (f.search_engine === 'google' || f.search_engine === 'both') && f.priority === 1\n).length;\n\n// КФ формула Яндекса (приблизительная оценка)\nconst formulaAssort = typeGroups.price.length > 0 ? 1 : 0;\nconst formulaTrust = (typeGroups.trust.length + typeGroups.legal.length + typeGroups.review.length) * 2;\nconst formulaService = (typeGroups.contact.length + typeGroups.guarantee.length + typeGroups.delivery.length) * 2;\nconst formulaUsability = typeGroups.conversion.length;\nconst formulaDesign = typeGroups.portfolio.length;\nfeatures.cf_formula_score = formulaAssort * (formulaTrust + formulaUsability + formulaDesign + formulaService);\n\n// Competitor gap\nfeatures.competitor_gap_count = factors.filter(f => f.competitor_gap).length;\nfeatures.competitor_gap_critical = factors.filter(f => f.competitor_gap && f.priority === 1).length;\nif (compData && compData.has_competitor_data) {\n  const gaps = compData.competitor_critical_gaps || [];\n  features.competitor_critical_gap_count = gaps.length;\n  features.competitors_analyzed = compData.competitors_analyzed;\n} else {\n  features.competitor_critical_gap_count = -1;\n  features.competitors_analyzed = 0;\n}\n\n// ── Embedding text — ВСЕ факторы, не только top 10 ──\nconst embedText = [\n  'Коммерческие факторы SEO аудит',\n  'Ниша: ' + batchInfo.niche,\n  'Город: ' + batchInfo.city,\n  'Кластер: ' + (batchInfo.niche_cluster || ''),\n  'Всего факторов: ' + factors.length,\n  'Критичных: ' + features.critical_count,\n  'Яндекс: ' + features.yandex_only + ' | Google: ' + features.google_only + ' | Оба: ' + features.both_engines,\n  'Формула КФ score: ' + features.cf_formula_score,\n  '',\n  'Факторы по приоритету:',\n  ...factors\n    .sort((a, b) => a.priority - b.priority)\n    .map(f => `P${f.priority} [${f.search_engine}] ${f.factor_name} (${f.factor_type}) — ${f.expected_impact}`)\n].join('\\n');\n\nreturn [{ json: {\n  ml_features: features,\n  embed_text: embedText,\n  cf_info: cfInfo,\n  batch_info: batchInfo,\n  competitor_data: compData\n}}];\n"
+      }
+    },
+    {
+      "id": "d58f547d-9c1c-42af-be04-9cc553efed3a",
+      "name": "ML CF Impact",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3460,
+        140
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://ml-service:8000/predict/cf_impact",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ features: $json.ml_features, niche: $json.batch_info.niche, city: $json.batch_info.city, niche_cluster: $json.batch_info.niche_cluster }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "8c6225f8-e5ca-47e2-b812-e3856f2ce9f8",
+      "name": "Embed Full Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3460,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\"model\":\"bge-m3\",\"prompt\":\"{{ $json.embed_text }}\"}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "79b2eb11-3579-450e-99e8-c0e04a04b75b",
+      "name": "Merge Final",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3760,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst mlPrep = $('Prepare ML Features v2').first().json;\n\n// NocoDB status\nlet nocodbOk = false;\ntry {\n  const nocoResult = $('NocoDB Upsert').first().json;\n  nocodbOk = Array.isArray(nocoResult) ? nocoResult.length > 0 : !!nocoResult?.Id;\n} catch(e) {}\n\n// ML result\nlet mlScore = null, mlLabel = null, mlConfidence = null;\ntry {\n  const ml = $('ML CF Impact').first().json;\n  mlScore = ml.score ?? null;\n  mlLabel = ml.label ?? null;\n  mlConfidence = ml.confidence ?? null;\n} catch(e) {}\n\n// Embedding\nlet embedding = null;\ntry {\n  embedding = $('Embed Full Summary').first().json.embedding;\n} catch(e) {}\n\nreturn [{ json: {\n  ...mlPrep,\n  ml_cf_score: mlScore,\n  ml_cf_label: mlLabel,\n  ml_confidence: mlConfidence,\n  embedding: embedding,\n  nocodb_saved: nocodbOk,\n  nocodb_result: nocodbOk ? 'OK' : 'FAIL'\n}}];\n"
+      }
+    },
+    {
+      "id": "4f129807-3ae5-4b3b-a8f7-e168234948c7",
+      "name": "Prepare Qdrant Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4060,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst prev = $input.first().json;\nconst vector = prev.embedding;\n\nif (!vector || !Array.isArray(vector) || vector.length !== 1024) {\n  return [{ json: { ...prev, qdrant_saved: false, qdrant_skip_reason: 'Invalid embedding (len=' + (vector?.length || 0) + ')' }}];\n}\n\n// Deterministic UUID: same project + date = same point (upsert, not duplicate)\nconst dateKey = new Date().toISOString().substring(0, 10); // YYYY-MM-DD\nconst raw = prev.batch_info.project_id + '_cf_' + dateKey;\n// Simple hash → UUID v5 style\nlet hash = 0;\nfor (let i = 0; i < raw.length; i++) {\n  hash = ((hash << 5) - hash) + raw.charCodeAt(i);\n  hash |= 0;\n}\nconst hex = Math.abs(hash).toString(16).padStart(8, '0');\nconst pointId = hex.substring(0,8) + '-' + hex.substring(0,4) + '-4' + hex.substring(1,4) + '-8' + hex.substring(2,5) + '-' + hex.substring(0,12).padEnd(12,'0');\n\nconst payload = {\n  points: [{\n    id: pointId,\n    vector: vector,\n    payload: {\n      project_id: prev.batch_info.project_id,\n      niche: prev.batch_info.niche,\n      niche_cluster: prev.batch_info.niche_cluster || '',\n      city: prev.batch_info.city,\n      type: 'commercial_factors_analysis',\n      factors_count: prev.cf_info.factors_count,\n      critical_count: prev.ml_features.critical_count,\n      ml_score: prev.ml_cf_score,\n      ml_label: prev.ml_cf_label,\n      cf_formula_score: prev.ml_features.cf_formula_score,\n      yandex_critical: prev.ml_features.yandex_critical,\n      google_critical: prev.ml_features.google_critical,\n      competitor_gap_count: prev.ml_features.competitor_gap_count,\n      competitors_analyzed: prev.ml_features.competitors_analyzed,\n      summary: JSON.stringify(prev.cf_info.summary || {}),\n      top_factors: prev.cf_info.factors?.slice(0, 8).map(f => f.factor_name).join(', ') || '',\n      warnings: (prev.cf_info.warnings || []).join('; '),\n      created: new Date().toISOString(),\n      workflow_version: 'v4.0'\n    }\n  }]\n};\n\nreturn [{ json: { ...prev, qdrant_payload: payload, qdrant_point_id: pointId }}];\n"
+      }
+    },
+    {
+      "id": "2c110777-84cb-4586-99b2-d2444453776b",
+      "name": "Save to Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4360,
+        200
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/cf_analysis_results/points",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.qdrant_payload) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 2000
+    },
+    {
+      "id": "531d7fab-95d2-4520-a9f7-4e400a6872ba",
+      "name": "Log Execution",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        4660,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.NOCODB_URL }}/api/v1/db/data/noco/{{ $env.NOCODB_ORG }}/{{ $env.NOCODB_TABLE_LOGS }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "xc-auth",
+              "value": "={{ $env.NOCODB_API_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  workflow: '05_cf',\n  version: 'v4.0',\n  status: 'success',\n  project_id: $json.batch_info.project_id,\n  niche: $json.batch_info.niche,\n  factors_count: $json.cf_info.factors_count,\n  ml_score: $json.ml_cf_score,\n  nocodb_saved: $json.nocodb_saved,\n  qdrant_saved: !!$json.qdrant_point_id,\n  groq_tokens: $json.cf_info.groq_tokens || 0,\n  competitors_analyzed: $json.batch_info.competitors_analyzed || 0,\n  warnings: ($json.cf_info.warnings || []).join('; '),\n  timestamp: new Date().toISOString()\n}) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "continueOnFail": true,
+      "alwaysOutputData": true
+    },
+    {
+      "id": "9958aa00-49c8-4f56-b48e-fa654db3a244",
+      "name": "Build Response v2",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4960,
+        200
+      ],
+      "parameters": {
+        "jsCode": "\nconst prev = $input.first().json;\nconst cfInfo = prev.cf_info;\nconst startedAt = prev.batch_info.started_at;\n\nlet qdrantOk = false;\ntry {\n  const qRes = $('Save to Qdrant').first().json;\n  qdrantOk = qRes.result?.status === 'acknowledged' || qRes.status === 'ok' || !!prev.qdrant_point_id;\n} catch(e) {}\n\nconst elapsed = startedAt ? ((new Date() - new Date(startedAt)) / 1000).toFixed(1) : 0;\n\n// Engine split stats\nconst factors = cfInfo.factors || [];\nconst yandexFactors = factors.filter(f => f.search_engine === 'yandex');\nconst googleFactors = factors.filter(f => f.search_engine === 'google');\nconst bothFactors = factors.filter(f => f.search_engine === 'both');\nconst aeoFactors = factors.filter(f => f.factor_type === 'aeo');\n\nreturn [{ json: {\n  success: true,\n  workflow_version: 'v4.0_ultra',\n  execution_time_sec: parseFloat(elapsed),\n\n  // Core results\n  factors_count: cfInfo.factors_count,\n  factors: factors,\n  summary: cfInfo.summary || {},\n\n  // Engine split [Я]/[G]/[ОБА]\n  engine_split: {\n    yandex: { count: yandexFactors.length, critical: yandexFactors.filter(f => f.priority === 1).length },\n    google: { count: googleFactors.length, critical: googleFactors.filter(f => f.priority === 1).length },\n    both: { count: bothFactors.length, critical: bothFactors.filter(f => f.priority === 1).length },\n    aeo: { count: aeoFactors.length }\n  },\n\n  // КФ формула Яндекса\n  cf_formula: {\n    score: prev.ml_features.cf_formula_score,\n    components: cfInfo.summary?.cf_formula_assessment || null\n  },\n\n  // Competitor gap\n  competitor_analysis: {\n    analyzed: prev.batch_info.competitors_analyzed,\n    gap_factors: prev.ml_features.competitor_gap_count,\n    critical_gaps: prev.competitor_data?.critical_gaps || []\n  },\n\n  // ML enrichment\n  ml_impact: {\n    score: prev.ml_cf_score,\n    label: prev.ml_cf_label,\n    confidence: prev.ml_confidence,\n    available: prev.ml_cf_score !== null\n  },\n\n  // Storage status\n  storage: {\n    nocodb: prev.nocodb_saved ? 'saved' : 'failed',\n    qdrant: qdrantOk ? 'saved' : 'skipped',\n    qdrant_collection: 'cf_analysis_results',\n    qdrant_point_id: prev.qdrant_point_id || null\n  },\n\n  // Metadata\n  metadata: {\n    niche: prev.batch_info.niche,\n    city: prev.batch_info.city,\n    project_id: prev.batch_info.project_id,\n    niche_cluster: prev.batch_info.niche_cluster,\n    source: prev.batch_info.source,\n    groq_tokens: cfInfo.groq_tokens || 0,\n    rag_sources: prev.rag_stats || {},\n    eeat_available: prev.batch_info.eeat_available\n  },\n\n  // Warnings\n  warnings: cfInfo.warnings || [],\n  errors: [\n    ...(!prev.nocodb_saved ? ['NocoDB save failed'] : []),\n    ...(!qdrantOk ? ['Qdrant save skipped'] : [])\n  ].filter(Boolean)\n}}];\n"
+      }
+    },
+    {
+      "id": "b3fd7e12-35f3-472d-9591-f63b98b4e8ec",
+      "name": "Return Result",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        5260,
+        200
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": "={{ $json.success ? 200 : 500 }}"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Auth Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron Monthly Audit": {
+      "main": [
+        [
+          {
+            "node": "Fetch Active Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Active Projects": {
+      "main": [
+        [
+          {
+            "node": "Split Projects",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Projects": {
+      "main": [
+        [
+          {
+            "node": "Validate Input v2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Auth Check": {
+      "main": [
+        [
+          {
+            "node": "Validate Input v2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Input v2": {
+      "main": [
+        [
+          {
+            "node": "Check Abort",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Abort": {
+      "main": [
+        [
+          {
+            "node": "Build Abort Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Query Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Abort Response": {
+      "main": [
+        [
+          {
+            "node": "Return Abort",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Query Embedding": {
+      "main": [
+        [
+          {
+            "node": "RAG seo_personas",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "RAG page_structures",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Page Structures",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch EEAT Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RAG seo_personas": {
+      "main": [
+        [
+          {
+            "node": "Merge All Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RAG page_structures": {
+      "main": [
+        [
+          {
+            "node": "Merge All Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Page Structures": {
+      "main": [
+        [
+          {
+            "node": "Merge All Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch EEAT Score": {
+      "main": [
+        [
+          {
+            "node": "Merge All Context",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge All Context": {
+      "main": [
+        [
+          {
+            "node": "Prepare Competitor Requests",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Competitor Requests": {
+      "main": [
+        [
+          {
+            "node": "Fetch Competitor HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Competitor HTML": {
+      "main": [
+        [
+          {
+            "node": "Build Competitor CF Matrix",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Competitor CF Matrix": {
+      "main": [
+        [
+          {
+            "node": "Build CF Prompt v4.0",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build CF Prompt v4.0": {
+      "main": [
+        [
+          {
+            "node": "Groq CF Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq CF Analysis": {
+      "main": [
+        [
+          {
+            "node": "Parse CF Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse CF Response": {
+      "main": [
+        [
+          {
+            "node": "Quality Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality Gate": {
+      "main": [
+        [
+          {
+            "node": "Dedup Delete Old",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Prepare ML Features v2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Error Response": {
+      "main": [
+        [
+          {
+            "node": "Log Error to NocoDB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Error to NocoDB": {
+      "main": [
+        [
+          {
+            "node": "Return Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedup Delete Old": {
+      "main": [
+        [
+          {
+            "node": "NocoDB Upsert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare ML Features v2": {
+      "main": [
+        [
+          {
+            "node": "ML CF Impact",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Embed Full Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NocoDB Upsert": {
+      "main": [
+        [
+          {
+            "node": "Merge Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ML CF Impact": {
+      "main": [
+        [
+          {
+            "node": "Merge Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Full Summary": {
+      "main": [
+        [
+          {
+            "node": "Merge Final",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Final": {
+      "main": [
+        [
+          {
+            "node": "Prepare Qdrant Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Qdrant Payload": {
+      "main": [
+        [
+          {
+            "node": "Save to Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save to Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Log Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Execution": {
+      "main": [
+        [
+          {
+            "node": "Build Response v2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response v2": {
+      "main": [
+        [
+          {
+            "node": "Return Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "4863a936-0ab4-4d85-af0e-08c2aadde6fc",
+  "meta": {
+    "instanceId": "e400d94cd35057382ffd98f35f5f609f9bd3f2676425b3672d90c1a1c4917652"
+  },
+  "id": "8c483f9c-527b-4f43-8530-8f32b9bba4a9",
+  "tags": [
+    {
+      "id": "wAkWwEno2lnM6tPP",
+      "name": "Commercial Factors"
+    },
+    {
+      "id": "xEz2TlQXSt5aYhse",
+      "name": "SEO"
+    },
+    {
+      "id": "046d2475-8292-4495-b905-7deba46fe950",
+      "name": "v4.0"
+    },
+    {
+      "id": "0b5fcd8a-49e7-42fe-b9fa-3bcbd3c0e798",
+      "name": "ML"
+    },
+    {
+      "id": "3c44d6d0-059d-4a1e-a7e9-8e3ff02162dd",
+      "name": "RAG"
+    }
+  ]
+}
